@@ -76,12 +76,10 @@ def extract_verbatim_blocks(pdf_path, start_title):
             if not capturing:
                 continue
 
-            if line_y is not None and last_y is not None:
-                if line_y - last_y > 15:  # Heuristic threshold for paragraph gap
-                    if current_para:
-                        paragraphs.append(current_para.copy())
-                        current_para.clear()
-                    paragraphs.append([])  # empty line
+            if line_y is not None and last_y is not None and line_y - last_y > 15:
+                if current_para:
+                    paragraphs.append(current_para.copy())
+                    current_para.clear()
 
             last_y = line_y
 
@@ -89,7 +87,6 @@ def extract_verbatim_blocks(pdf_path, start_title):
                 if current_para:
                     paragraphs.append(current_para.copy())
                     current_para.clear()
-                paragraphs.append([])
                 continue
 
             for line in block.get("lines", []):
@@ -101,7 +98,6 @@ def extract_verbatim_blocks(pdf_path, start_title):
                         "bold": is_bold,
                         "italic": is_italic
                     })
-                current_para.append({"text": "\n", "bold": False, "italic": False})
 
     if current_para:
         paragraphs.append(current_para)
@@ -144,17 +140,6 @@ def create_notion_page(title, paragraphs):
             buffer = ""
 
         for span in para:
-            if span["text"] == "\n":
-                flush_to_block()
-                if blocks:
-                    children.append({
-                        "object": "block",
-                        "type": "paragraph",
-                        "paragraph": {"rich_text": blocks}
-                    })
-                    blocks = []
-                continue
-
             if span["bold"] == current_style["bold"] and span["italic"] == current_style["italic"]:
                 buffer += span["text"]
             else:
@@ -186,7 +171,7 @@ def create_notion_page(title, paragraphs):
         print("Response:", r.text)
         print("Payload:", json.dumps(payload, indent=2))
     r.raise_for_status()
-    print(f"[✓] Created Notion page: {title}")
+    print(f"[\u2713] Created Notion page: {title}")
 
 def run():
     titles = extract_titles_after_cutoff(PDF_PATH, CUTOFF_TITLE)
