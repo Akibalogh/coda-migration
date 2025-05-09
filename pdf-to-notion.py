@@ -7,7 +7,7 @@ PDF_PATH = "DLC.link Wiki.pdf"
 NOTION_API_TOKEN = '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'
 NOTION_PARENT_PAGE_ID = '1dc636dd0ba580a6b3cbe3074911045f'
 CUTOFF_TITLE = "Client Meeting Notes"
-MODE = "single"  # Options: "single", "ten", "all"
+MODE = "all"  # Options: "single", "ten", "all"
 
 notion_headers = {
     'Authorization': f'Bearer {NOTION_API_TOKEN}',
