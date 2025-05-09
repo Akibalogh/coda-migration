@@ -40,6 +40,7 @@ def extract_titles_after_cutoff(pdf_path, cutoff_title):
                         seen.add(text)
     return headings
 
+
 def extract_verbatim_blocks(pdf_path, start_title):
     doc = fitz.open(pdf_path)
     capturing = False
@@ -76,32 +77,33 @@ def extract_verbatim_blocks(pdf_path, start_title):
             if not capturing:
                 continue
 
-            if line_y is not None and last_y is not None and line_y - last_y > 15:
-                if current_para:
-                    paragraphs.append(current_para.copy())
-                    current_para.clear()
+            if line_y is not None and last_y is not None:
+                gap = line_y - last_y
+                if gap > 40:
+                    current_para.append({"text": "\n", "bold": False, "italic": False})
+                current_para.append({"text": "\n", "bold": False, "italic": False})
 
             last_y = line_y
 
             if not block_text:
-                if current_para:
-                    paragraphs.append(current_para.copy())
-                    current_para.clear()
                 continue
 
             for line in block.get("lines", []):
                 for span in line.get("spans", []):
                     is_bold = (span.get("flags", 0) & 2 > 0) or "Bold" in span.get("font", "")
                     is_italic = span.get("flags", 0) & 1 > 0
-                    current_para.append({
-                        "text": span["text"],
-                        "bold": is_bold,
-                        "italic": is_italic
-                    })
+                    text = span["text"]
+                    if text.strip():
+                        current_para.append({
+                            "text": text + " ",
+                            "bold": is_bold,
+                            "italic": is_italic
+                        })
 
     if current_para:
         paragraphs.append(current_para)
     return paragraphs
+
 
 def create_notion_page(title, paragraphs):
     children = []
@@ -141,11 +143,11 @@ def create_notion_page(title, paragraphs):
 
         for span in para:
             if span["bold"] == current_style["bold"] and span["italic"] == current_style["italic"]:
-                buffer += span["text"]
+                buffer += span["text"] + " "
             else:
                 flush_to_block()
                 current_style = {"bold": span["bold"], "italic": span["italic"]}
-                buffer = span["text"]
+                buffer = span["text"] + " "
 
         flush_to_block()
         if blocks:
@@ -172,6 +174,7 @@ def create_notion_page(title, paragraphs):
         print("Payload:", json.dumps(payload, indent=2))
     r.raise_for_status()
     print(f"[\u2713] Created Notion page: {title}")
+
 
 def run():
     titles = extract_titles_after_cutoff(PDF_PATH, CUTOFF_TITLE)
