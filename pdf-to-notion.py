@@ -179,6 +179,32 @@ def build_notion_blocks_with_bullets(paragraphs):
     return blocks
 
 def create_notion_page(title, paragraphs):
+    # --- Search for existing page by title ---
+    search_url = "https://api.notion.com/v1/search"
+    search_payload = {
+        "query": title,
+        "sort": {"direction": "descending", "timestamp": "last_edited_time"},
+        "filter": {"value": "page", "property": "object"}
+    }
+
+    search_response = requests.post(search_url, headers=notion_headers, json=search_payload)
+    if search_response.ok:
+        results = search_response.json().get("results", [])
+        for page in results:
+            page_title = page.get("properties", {}).get("title", {}).get("title", [])
+            if page_title and page_title[0]["text"]["content"] == title:
+                page_id = page["id"]
+                print(f"[↺] Existing page found: {title} → Deleting")
+                delete_url = f"https://api.notion.com/v1/blocks/{page_id}"
+                del_res = requests.delete(delete_url, headers=notion_headers)
+                if del_res.ok:
+                    print(f"[✓] Deleted: {title}")
+                else:
+                    print(f"[ERROR] Failed to delete page: {title}")
+                    print(del_res.status_code, del_res.text)
+                break
+
+    # --- Build new content blocks ---
     children = build_notion_blocks_with_bullets(paragraphs)
 
     payload = {
@@ -189,15 +215,20 @@ def create_notion_page(title, paragraphs):
         "children": children
     }
 
+    print(f"> Creating Notion page: '{title}' under parent ID {NOTION_PARENT_PAGE_ID}")
     url = 'https://api.notion.com/v1/pages'
     r = requests.post(url, headers=notion_headers, json=payload)
 
     if not r.ok:
-        print("Notion API error:", r.status_code)
+        print("[ERROR] Notion API failed:")
+        print("Status Code:", r.status_code)
         print("Response:", r.text)
         print("Payload:", json.dumps(payload, indent=2))
-    r.raise_for_status()
-    print(f"[\u2713] Created Notion page: {title}")
+        return
+
+    notion_url = r.json().get("url", "(URL missing)")
+    print(f"[✓] Created Notion page: {title}")
+    print(f"    ↳ {notion_url}")
 
 def run():
     titles = extract_titles_after_cutoff(PDF_PATH, CUTOFF_TITLE)
@@ -205,10 +236,6 @@ def run():
 
     count = 0
     for title in titles:
-        if title in created_titles:
-            print(f"[skip] Already created: {title}")
-            continue
-
         print(f"> Processing: {title}")
         paragraphs = extract_verbatim_blocks(PDF_PATH, title)
         if paragraphs:
