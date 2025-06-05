@@ -139,18 +139,20 @@ def build_notion_blocks_with_bullets(paragraphs):
             nonlocal buffer
             if not buffer:
                 return
-            rich_text.append({
-                "type": "text",
-                "text": {"content": buffer},
-                "annotations": {
-                    "bold": current_style["bold"],
-                    "italic": current_style["italic"],
-                    "underline": False,
-                    "strikethrough": False,
-                    "code": False,
-                    "color": "default"
-                }
-            })
+            for i in range(0, len(buffer), 2000):
+                chunk = buffer[i:i+2000]
+                rich_text.append({
+                    "type": "text",
+                    "text": {"content": chunk},
+                    "annotations": {
+                        "bold": current_style["bold"],
+                        "italic": current_style["italic"],
+                        "underline": False,
+                        "strikethrough": False,
+                        "code": False,
+                        "color": "default"
+                    }
+                })
             buffer = ""
 
         for span in para:
