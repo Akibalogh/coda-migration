@@ -1,19 +1,26 @@
 import fitz  # PyMuPDF
 import requests
 import json
+import os
 
 # --- Configuration ---
 PDF_PATH = "DLC.link Wiki.pdf"
 NOTION_API_TOKEN = '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'
 NOTION_PARENT_PAGE_ID = '1dc636dd0ba580a6b3cbe3074911045f'
 CUTOFF_TITLE = "Client Meeting Notes"
-MODE = "all"  # Options: "single", "ten", "all"
+MODE = "single"  # Options: "single", "ten", "all"
 
 notion_headers = {
     'Authorization': f'Bearer {NOTION_API_TOKEN}',
     'Notion-Version': '2022-06-28',
     'Content-Type': 'application/json'
 }
+
+CREATED_TITLES_PATH = "created_titles.txt"
+created_titles = set()
+if os.path.exists(CREATED_TITLES_PATH):
+    with open(CREATED_TITLES_PATH, "r") as f:
+        created_titles = set(line.strip() for line in f)
 
 def extract_titles_after_cutoff(pdf_path, cutoff_title):
     doc = fitz.open(pdf_path)
@@ -39,7 +46,6 @@ def extract_titles_after_cutoff(pdf_path, cutoff_title):
                         headings.append(text)
                         seen.add(text)
     return headings
-
 
 def extract_verbatim_blocks(pdf_path, start_title):
     doc = fitz.open(pdf_path)
@@ -97,65 +103,81 @@ def extract_verbatim_blocks(pdf_path, start_title):
                         current_para.append({
                             "text": text + " ",
                             "bold": is_bold,
-                            "italic": is_italic
+                            "italic": is_italic,
+                            "x": span["bbox"][0]
                         })
 
     if current_para:
         paragraphs.append(current_para)
     return paragraphs
 
+def build_notion_blocks_with_bullets(paragraphs):
+    def get_bullet_type(text):
+        if text.strip().startswith("→"):
+            return "to_do"
+        elif text.strip().startswith("◦"):
+            return "bulleted_list_item"
+        elif text.strip().startswith("•"):
+            return "bulleted_list_item"
+        return "paragraph"
 
-def create_notion_page(title, paragraphs):
-    children = []
-
+    blocks = []
     for para in paragraphs:
         if not para:
-            children.append({
+            blocks.append({
                 "object": "block",
                 "type": "paragraph",
                 "paragraph": {"rich_text": []}
             })
             continue
 
+        rich_text = []
         buffer = ""
         current_style = {"bold": para[0]["bold"], "italic": para[0]["italic"]}
-        blocks = []
 
-        def flush_to_block():
-            nonlocal buffer, blocks, current_style
-            if buffer == "":
+        def flush_buffer():
+            nonlocal buffer
+            if not buffer:
                 return
-            chunks = [buffer[i:i+2000] for i in range(0, len(buffer), 2000)]
-            for chunk in chunks:
-                blocks.append({
-                    "type": "text",
-                    "text": {"content": chunk},
-                    "annotations": {
-                        "bold": current_style["bold"],
-                        "italic": current_style["italic"],
-                        "underline": False,
-                        "strikethrough": False,
-                        "code": False,
-                        "color": "default"
-                    }
-                })
+            rich_text.append({
+                "type": "text",
+                "text": {"content": buffer},
+                "annotations": {
+                    "bold": current_style["bold"],
+                    "italic": current_style["italic"],
+                    "underline": False,
+                    "strikethrough": False,
+                    "code": False,
+                    "color": "default"
+                }
+            })
             buffer = ""
 
         for span in para:
             if span["bold"] == current_style["bold"] and span["italic"] == current_style["italic"]:
-                buffer += span["text"] + " "
+                buffer += span["text"]
             else:
-                flush_to_block()
+                flush_buffer()
                 current_style = {"bold": span["bold"], "italic": span["italic"]}
-                buffer = span["text"] + " "
+                buffer = span["text"]
+        flush_buffer()
 
-        flush_to_block()
-        if blocks:
-            children.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {"rich_text": blocks}
-            })
+        first_text = para[0]["text"].strip()
+        bullet_type = get_bullet_type(first_text)
+
+        if bullet_type != "paragraph" and rich_text:
+            rich_text[0]["text"]["content"] = rich_text[0]["text"]["content"].lstrip("•◦→ ").strip()
+
+        blocks.append({
+            "object": "block",
+            "type": bullet_type,
+            bullet_type: {"rich_text": rich_text}
+        })
+
+    return blocks
+
+def create_notion_page(title, paragraphs):
+    children = build_notion_blocks_with_bullets(paragraphs)
 
     payload = {
         "parent": {"page_id": NOTION_PARENT_PAGE_ID},
@@ -175,17 +197,22 @@ def create_notion_page(title, paragraphs):
     r.raise_for_status()
     print(f"[\u2713] Created Notion page: {title}")
 
-
 def run():
     titles = extract_titles_after_cutoff(PDF_PATH, CUTOFF_TITLE)
     print(f"Found {len(titles)} client pages\n")
 
     count = 0
     for title in titles:
+        if title in created_titles:
+            print(f"[skip] Already created: {title}")
+            continue
+
         print(f"> Processing: {title}")
         paragraphs = extract_verbatim_blocks(PDF_PATH, title)
         if paragraphs:
             create_notion_page(title, paragraphs)
+            with open(CREATED_TITLES_PATH, "a") as f:
+                f.write(title + "\n")
             count += 1
 
         if MODE == "single":
