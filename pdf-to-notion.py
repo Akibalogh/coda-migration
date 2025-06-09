@@ -36,7 +36,7 @@ def ocr_pdf_page(pdf_path, page_num, dpi=300):
 
 def postprocess_ocr_line(text):
     text = re.sub(r"\s+([.,!?;:])", r"\1", text)
-    text = re.sub(r"(?<![.?!])\n(?=\S)", ". ", text)
+    text = text.replace("\n", " ")
     text = re.sub(r"([a-zA-Z])\n([a-zA-Z])", r"\1 \2", text)
     text = re.sub(r"\s{2,}", " ", text)
     return text.strip()
@@ -44,25 +44,12 @@ def postprocess_ocr_line(text):
 def clean_ocr_text_to_paragraphs(ocr_text):
     lines = ocr_text.splitlines()
     paragraphs = []
+    buffer = []
+    last_type = None
 
-    for line in lines:
-        text = postprocess_ocr_line(line.strip())
-        if not text:
-            continue
-
-        if text.startswith(("e¢", "e", "°", "•", "◦", "-", "→", ">", "*")):
-            content = text.lstrip("e¢°•◦→->* ").strip()
-            bullet_type = "bulleted_list_item"
-        else:
-            content = text
-            bullet_type = "paragraph"
-
-        paragraphs.append([{
-            "text": content,
-            "bold": False,
-            "italic": False,
-            "type": bullet_type
-        }])
+    # Group into paragraph-style blocks
+    for item in buffer:
+        paragraphs.append([item])
     return paragraphs
 
 def build_notion_blocks_with_bullets(paragraphs):
