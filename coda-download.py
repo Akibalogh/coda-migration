@@ -1,4 +1,5 @@
 import requests
+import json
 import unicodedata
 from bs4 import BeautifulSoup
 
@@ -21,6 +22,7 @@ def normalize(text):
     return unicodedata.normalize("NFKC", text.strip().lower())
 
 def fetch_all_root_pages():
+    print("[INFO] Fetching all Coda root pages...")
     base_url = f'https://coda.io/apis/v1/docs/{CODA_DOC_ID}/pages'
     all_pages = []
     next_token = None
@@ -38,25 +40,68 @@ def fetch_all_root_pages():
 
     return all_pages
 
-def fetch_coda_page_html(page_id):
-    url = f'https://coda.io/apis/v1/docs/{CODA_DOC_ID}/pages/{page_id}/content'
-    resp = requests.get(url, headers=coda_headers)
+def fetch_coda_page_html(page_id_or_canvas_id, is_canvas=True):
+    if is_canvas:
+        browser_url = f'https://coda.io/d/_d{CODA_DOC_ID}/_{page_id_or_canvas_id[7:]}'
+    else:
+        browser_url = f'https://coda.io/d/_d{CODA_DOC_ID}/_{page_id_or_canvas_id}'
+
+    print(f"[INFO] Fetching Coda browser page: {browser_url}")
+    resp = requests.get(browser_url)
     resp.raise_for_status()
-    return resp.json().get("body", "")
+    return resp.text
 
-def extract_text_blocks_from_html(html):
+def extract_sections_by_heading(html):
+    print("[INFO] Parsing HTML into sections by headings")
     soup = BeautifulSoup(html, 'html.parser')
-    lines = []
-    for el in soup.find_all(['p', 'li']):
-        text = el.get_text(strip=True)
-        if text:
-            lines.append(text)
-    return lines
+    sections = {}
+    current_heading = None
+    current_list_stack = []
 
-def create_notion_page(title, text_blocks, source_url=None):
-    children_blocks = []
+    for el in soup.find_all(['h1', 'h2', 'h3', 'p', 'li']):
+        tag = el.name
+        text = el.get_text(strip=True)
+        if not text:
+            continue
+
+        if tag in ['h1', 'h2', 'h3']:
+            current_heading = text
+            sections[current_heading] = []
+            current_list_stack = []
+        elif current_heading:
+            bullet_type = 'bulleted_list_item' if tag == 'li' else 'paragraph'
+            block = {
+                "object": "block",
+                "type": bullet_type,
+                bullet_type: {
+                    "rich_text": [{
+                        "type": "text",
+                        "text": {"content": text},
+                        "annotations": {
+                            "bold": False,
+                            "italic": False,
+                            "underline": False,
+                            "strikethrough": False,
+                            "code": False,
+                            "color": "default"
+                        }
+                    }]
+                }
+            }
+            if bullet_type == 'bulleted_list_item' and current_list_stack:
+                current_list_stack[-1].setdefault('children', []).append(block)
+            else:
+                sections[current_heading].append(block)
+                if bullet_type == 'bulleted_list_item':
+                    current_list_stack = [block]
+                else:
+                    current_list_stack = []
+    return sections
+
+def build_notion_blocks(section_blocks, source_url=None):
+    blocks = []
     if source_url:
-        children_blocks.append({
+        blocks.append({
             "object": "block",
             "type": "paragraph",
             "paragraph": {
@@ -66,20 +111,13 @@ def create_notion_page(title, text_blocks, source_url=None):
                 }]
             }
         })
+    blocks.extend(section_blocks)
+    return blocks
 
-    for line in text_blocks:
-        children_blocks.append({
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [{
-                    "type": "text",
-                    "text": {"content": line}
-                }]
-            }
-        })
-
-    data = {
+def create_notion_page(title, section_blocks, source_url=None):
+    print(f"[INFO] Creating Notion page: {title}")
+    children_blocks = build_notion_blocks(section_blocks, source_url)
+    payload = {
         "parent": {"page_id": NOTION_PARENT_PAGE_ID},
         "properties": {
             "title": {
@@ -88,14 +126,13 @@ def create_notion_page(title, text_blocks, source_url=None):
         },
         "children": children_blocks
     }
-
     url = 'https://api.notion.com/v1/pages'
-    resp = requests.post(url, headers=notion_headers, json=data)
+    resp = requests.post(url, headers=notion_headers, json=payload)
     resp.raise_for_status()
     print(f"[DONE] Created Notion page: {title}")
 
-# --- Main logic ---
 def run():
+    print("[INFO] Starting migration run...")
     pages = fetch_all_root_pages()
     cutoff_idx = next((i for i, p in enumerate(pages) if normalize(p.get('name', '')) == normalize(CUTOFF_TITLE)), None)
 
@@ -110,13 +147,15 @@ def run():
 
     first_page = filtered_pages[0]
     title = first_page.get("name", "Untitled")
-    page_id = first_page.get("id")
-    url = first_page.get("browserLink")
+    browser_url = first_page.get("browserLink")
+    page_id = first_page.get("id").replace("canvas-", "")
 
     print(f"Fetching and sending: {title}")
-    html = fetch_coda_page_html(page_id)
-    text_blocks = extract_text_blocks_from_html(html)
-    create_notion_page(title, text_blocks, source_url=url)
+    html = fetch_coda_page_html(page_id, is_canvas=True)
+    sections = extract_sections_by_heading(html)
+    print(f"[INFO] Extracted {len(sections)} sections.")
+    for heading, blocks in sections.items():
+        create_notion_page(heading, blocks, source_url=browser_url)
 
 if __name__ == '__main__':
     run()
