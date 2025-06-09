@@ -2,6 +2,9 @@ import fitz  # PyMuPDF
 import requests
 import json
 import os
+from PIL import Image
+import pytesseract
+import io
 
 # --- Configuration ---
 PDF_PATH = "DLC.link Wiki.pdf"
@@ -22,105 +25,42 @@ if os.path.exists(CREATED_TITLES_PATH):
     with open(CREATED_TITLES_PATH, "r") as f:
         created_titles = set(line.strip() for line in f)
 
-def extract_titles_after_cutoff(pdf_path, cutoff_title):
-    doc = fitz.open(pdf_path)
-    headings = []
-    seen = set()
-    passed_cutoff = False
-    cutoff_size = None
 
-    for page in doc:
-        for block in page.get_text("dict")['blocks']:
-            for line in block.get("lines", []):
-                if not line.get("spans"):
-                    continue
-                span = line["spans"][0]
-                text = span["text"].strip()
-                size = span["size"]
-                if size >= 16 and text and text not in seen:
-                    if text == cutoff_title:
-                        passed_cutoff = True
-                        cutoff_size = size
-                        continue
-                    if passed_cutoff and size == cutoff_size:
-                        headings.append(text)
-                        seen.add(text)
-    return headings
-
-def extract_verbatim_blocks(pdf_path, start_title):
+def ocr_pdf_page(pdf_path, page_num, dpi=300):
     doc = fitz.open(pdf_path)
-    capturing = False
-    heading_size = None
+    if page_num < 0 or page_num >= len(doc):
+        return ""
+    pix = doc[page_num].get_pixmap(dpi=dpi)
+    img = Image.open(io.BytesIO(pix.tobytes("png")))
+    return pytesseract.image_to_string(img)
+
+
+def clean_ocr_text_to_paragraphs(ocr_text):
+    lines = ocr_text.splitlines()
     paragraphs = []
-    current_para = []
-    last_y = None
 
-    for page in doc:
-        for block in page.get_text("dict")['blocks']:
-            if not block.get("lines"):
-                continue
+    for line in lines:
+        text = line.strip()
+        if not text:
+            continue
 
-            line_y = block['lines'][0]['bbox'][1] if block['lines'] else None
-            block_text = " ".join(
-                span["text"] for line in block["lines"] for span in line.get("spans", [])
-            ).strip()
+        if text.startswith(("e¢", "e", "°", "•", "◦", "-", "→", ">", "*")):
+            content = text.lstrip("e¢°•◦→->* ").strip()
+            bullet_type = "bulleted_list_item"
+        else:
+            content = text
+            bullet_type = "paragraph"
 
-            if not capturing and block_text == start_title:
-                span = block["lines"][0]["spans"][0]
-                heading_size = span["size"]
-                capturing = True
-                last_y = line_y
-                continue
-
-            if capturing:
-                span = block["lines"][0]["spans"][0]
-                if span["size"] == heading_size and block_text != start_title:
-                    if current_para:
-                        paragraphs.append(current_para.copy())
-                        current_para.clear()
-                    return paragraphs
-
-            if not capturing:
-                continue
-
-            if line_y is not None and last_y is not None:
-                gap = line_y - last_y
-                if gap > 40:
-                    current_para.append({"text": "\n", "bold": False, "italic": False})
-                current_para.append({"text": "\n", "bold": False, "italic": False})
-
-            last_y = line_y
-
-            if not block_text:
-                continue
-
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    is_bold = (span.get("flags", 0) & 2 > 0) or "Bold" in span.get("font", "")
-                    is_italic = span.get("flags", 0) & 1 > 0
-                    text = span["text"]
-                    if text.strip():
-                        current_para.append({
-                            "text": text + " ",
-                            "bold": is_bold,
-                            "italic": is_italic,
-                            "x": span["bbox"][0]
-                        })
-
-    if current_para:
-        paragraphs.append(current_para)
+        paragraphs.append([{
+            "text": content,
+            "bold": False,
+            "italic": False,
+            "type": bullet_type
+        }])
     return paragraphs
 
-def build_notion_blocks_with_bullets(paragraphs):
-    def get_bullet_type(text):
-        if text.strip().startswith("→"):
-            return "to_do"
-        elif text.strip().startswith("◦"):
-            return "bulleted_list_item"
-        elif text.strip().startswith("•"):
-            return "bulleted_list_item"
-        return "paragraph"
 
+def build_notion_blocks_with_bullets(paragraphs):
     blocks = []
     for para in paragraphs:
         if not para:
@@ -157,29 +97,25 @@ def build_notion_blocks_with_bullets(paragraphs):
 
         for span in para:
             if span["bold"] == current_style["bold"] and span["italic"] == current_style["italic"]:
-                buffer += span["text"]
+                buffer += span["text"] + " "
             else:
                 flush_buffer()
                 current_style = {"bold": span["bold"], "italic": span["italic"]}
-                buffer = span["text"]
+                buffer = span["text"] + " "
         flush_buffer()
 
-        first_text = para[0]["text"].strip()
-        bullet_type = get_bullet_type(first_text)
-
-        if bullet_type != "paragraph" and rich_text:
-            rich_text[0]["text"]["content"] = rich_text[0]["text"]["content"].lstrip("•◦→ ").strip()
+        block_type = para[0].get("type", "paragraph")
 
         blocks.append({
             "object": "block",
-            "type": bullet_type,
-            bullet_type: {"rich_text": rich_text}
+            "type": block_type,
+            block_type: {"rich_text": rich_text}
         })
 
     return blocks
 
+
 def create_notion_page(title, paragraphs):
-    # --- Search for existing page by title ---
     search_url = "https://api.notion.com/v1/search"
     search_payload = {
         "query": title,
@@ -204,7 +140,6 @@ def create_notion_page(title, paragraphs):
                     print(del_res.status_code, del_res.text)
                 break
 
-    # --- Build new content blocks ---
     children = build_notion_blocks_with_bullets(paragraphs)
 
     payload = {
@@ -230,23 +165,14 @@ def create_notion_page(title, paragraphs):
     print(f"[✓] Created Notion page: {title}")
     print(f"    ↳ {notion_url}")
 
+
 def run():
-    titles = extract_titles_after_cutoff(PDF_PATH, CUTOFF_TITLE)
-    print(f"Found {len(titles)} client pages\n")
-
-    count = 0
-    for title in titles:
-        print(f"> Processing: {title}")
-        paragraphs = extract_verbatim_blocks(PDF_PATH, title)
-        if paragraphs:
-            create_notion_page(title, paragraphs)
-            with open(CREATED_TITLES_PATH, "a") as f:
-                f.write(title + "\n")
-            count += 1
-
-        if MODE == "single":
-            break
-        elif MODE == "ten" and count >= 10:
+    doc = fitz.open(PDF_PATH)
+    for i, page in enumerate(doc):
+        ocr_text = ocr_pdf_page(PDF_PATH, i)
+        if "Second CL Grant preso - 10/19/21" in ocr_text:
+            paragraphs = clean_ocr_text_to_paragraphs(ocr_text)
+            create_notion_page("Second CL Grant preso - 10/19/21", paragraphs)
             break
 
 if __name__ == "__main__":
