@@ -54,9 +54,7 @@ def fetch_coda_page_html(page_id_or_canvas_id, is_canvas=True):
 def extract_sections_by_heading(html):
     print("[INFO] Parsing HTML into sections by headings")
     soup = BeautifulSoup(html, 'html.parser')
-    sections = {}
-    current_heading = None
-    current_list_stack = []
+    blocks = []
 
     for el in soup.find_all(['h1', 'h2', 'h3', 'p', 'li']):
         tag = el.name
@@ -64,39 +62,28 @@ def extract_sections_by_heading(html):
         if not text:
             continue
 
-        if tag in ['h1', 'h2', 'h3']:
-            current_heading = text
-            sections[current_heading] = []
-            current_list_stack = []
-        elif current_heading:
-            bullet_type = 'bulleted_list_item' if tag == 'li' else 'paragraph'
-            block = {
-                "object": "block",
-                "type": bullet_type,
-                bullet_type: {
-                    "rich_text": [{
-                        "type": "text",
-                        "text": {"content": text},
-                        "annotations": {
-                            "bold": False,
-                            "italic": False,
-                            "underline": False,
-                            "strikethrough": False,
-                            "code": False,
-                            "color": "default"
-                        }
-                    }]
-                }
+        block_type = 'bulleted_list_item' if tag == 'li' else 'paragraph'
+        block = {
+            "object": "block",
+            "type": block_type,
+            block_type: {
+                "rich_text": [{
+                    "type": "text",
+                    "text": {"content": text},
+                    "annotations": {
+                        "bold": False,
+                        "italic": False,
+                        "underline": False,
+                        "strikethrough": False,
+                        "code": False,
+                        "color": "default"
+                    }
+                }]
             }
-            if bullet_type == 'bulleted_list_item' and current_list_stack:
-                current_list_stack[-1].setdefault('children', []).append(block)
-            else:
-                sections[current_heading].append(block)
-                if bullet_type == 'bulleted_list_item':
-                    current_list_stack = [block]
-                else:
-                    current_list_stack = []
-    return sections
+        }
+        blocks.append(block)
+
+    return blocks
 
 def build_notion_blocks(section_blocks, source_url=None):
     blocks = []
@@ -152,10 +139,9 @@ def run():
 
     print(f"Fetching and sending: {title}")
     html = fetch_coda_page_html(page_id, is_canvas=True)
-    sections = extract_sections_by_heading(html)
-    print(f"[INFO] Extracted {len(sections)} sections.")
-    for heading, blocks in sections.items():
-        create_notion_page(heading, blocks, source_url=browser_url)
+    section_blocks = extract_sections_by_heading(html)
+    print(f"[INFO] Extracted {len(section_blocks)} blocks.")
+    create_notion_page(title, section_blocks, source_url=browser_url)
 
 if __name__ == '__main__':
     run()
