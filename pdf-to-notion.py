@@ -5,6 +5,7 @@ import os
 from PIL import Image
 import pytesseract
 import io
+import re
 
 # --- Configuration ---
 PDF_PATH = "DLC.link Wiki.pdf"
@@ -25,7 +26,6 @@ if os.path.exists(CREATED_TITLES_PATH):
     with open(CREATED_TITLES_PATH, "r") as f:
         created_titles = set(line.strip() for line in f)
 
-
 def ocr_pdf_page(pdf_path, page_num, dpi=300):
     doc = fitz.open(pdf_path)
     if page_num < 0 or page_num >= len(doc):
@@ -34,13 +34,19 @@ def ocr_pdf_page(pdf_path, page_num, dpi=300):
     img = Image.open(io.BytesIO(pix.tobytes("png")))
     return pytesseract.image_to_string(img)
 
+def postprocess_ocr_line(text):
+    text = re.sub(r"\s+([.,!?;:])", r"\1", text)
+    text = re.sub(r"(?<![.?!])\n(?=\S)", ". ", text)
+    text = re.sub(r"([a-zA-Z])\n([a-zA-Z])", r"\1 \2", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip()
 
 def clean_ocr_text_to_paragraphs(ocr_text):
     lines = ocr_text.splitlines()
     paragraphs = []
 
     for line in lines:
-        text = line.strip()
+        text = postprocess_ocr_line(line.strip())
         if not text:
             continue
 
@@ -58,7 +64,6 @@ def clean_ocr_text_to_paragraphs(ocr_text):
             "type": bullet_type
         }])
     return paragraphs
-
 
 def build_notion_blocks_with_bullets(paragraphs):
     blocks = []
@@ -114,7 +119,6 @@ def build_notion_blocks_with_bullets(paragraphs):
 
     return blocks
 
-
 def create_notion_page(title, paragraphs):
     search_url = "https://api.notion.com/v1/search"
     search_payload = {
@@ -165,15 +169,50 @@ def create_notion_page(title, paragraphs):
     print(f"[✓] Created Notion page: {title}")
     print(f"    ↳ {notion_url}")
 
-
 def run():
     doc = fitz.open(PDF_PATH)
+    collect = False
+    collected_text = []
+    current_title_size = None
+    print("[INFO] Starting OCR scan across pages...")
+
     for i, page in enumerate(doc):
-        ocr_text = ocr_pdf_page(PDF_PATH, i)
-        if "Second CL Grant preso - 10/19/21" in ocr_text:
-            paragraphs = clean_ocr_text_to_paragraphs(ocr_text)
-            create_notion_page("Second CL Grant preso - 10/19/21", paragraphs)
+        # skip early exit until after collection of at least one next-title match
+        if MODE == "single" and collected_text and not collect:
             break
+        print(f"[INFO] OCR page {i+1}")
+        blocks = page.get_text("dict").get("blocks", [])
+        page_text = ""
+        for block in blocks:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    if span["text"].strip() == "Second CL Grant preso - 10/19/21":
+                        collect = True
+                        current_title_size = span["size"]
+                        print(f"[INFO] Found section start on page {i+1}")
+                    elif collect and span["size"] == current_title_size and span["text"].strip() and span["text"].strip() != "Second CL Grant preso - 10/19/21":
+                        print(f"[INFO] New section detected: '{span['text'].strip()}' on page {i+1}, stopping collection.")
+                        collect = False
+                        break
+                if not collect:
+                    break
+            if not collect:
+                break
+
+        if collect:
+            ocr_text = ocr_pdf_page(PDF_PATH, i)
+            collected_text.append(ocr_text)
+
+    if not collected_text:
+        print("[WARN] No content matched the target title.")
+        return
+
+    combined_text = "\n".join(collected_text)
+    paragraphs = clean_ocr_text_to_paragraphs(combined_text)
+    print("[INFO] Parsed paragraphs from OCR.")
+    create_notion_page("Second CL Grant preso - 10/19/21", paragraphs)
+    print("[INFO] Script completed.")
+
 
 if __name__ == "__main__":
     run()
