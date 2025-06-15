@@ -1,3 +1,5 @@
+output/
 .env
+extracted_content/
 .DS_Store
 *.pdf
