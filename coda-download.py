@@ -4,67 +4,21 @@ import unicodedata
 from bs4 import BeautifulSoup
 import time
 import sys
+import os
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
 
-# --- Configuration ---
+# Configuration
 CODA_API_TOKEN = '3c10b406-488c-49ac-a483-4b912be6fc23'
 CODA_DOC_ID = '0eJEEjA-GU'
-NOTION_API_TOKEN = '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'
-NOTION_PARENT_PAGE_ID = '1dc636dd0ba580a6b3cbe3074911045f'
-CUTOFF_TITLE = 'Client Meeting Notes'
+MAX_TEST_PAGES = 2  # Limit to 2 test pages for now
 
-# --- Headers ---
+# Headers
 coda_headers = {'Authorization': f'Bearer {CODA_API_TOKEN}'}
-notion_headers = {
-    'Authorization': f'Bearer {NOTION_API_TOKEN}',
-    'Notion-Version': '2022-06-28',
-    'Content-Type': 'application/json'
-}
-
-# --- CANVAS ENDPOINT DEBUG BLOCK ---
-'''
-if not CODA_API_TOKEN:
-    print("[ERROR] CODA_API_TOKEN environment variable is not set!")
-    sys.exit(1)
-
-canvas_url = f"https://coda.io/apis/v1/docs/{CODA_DOC_ID}/canvases"
-print(f"[DEBUG] Fetching canvases from: {canvas_url}")
-try:
-    resp = requests.get(canvas_url, headers=coda_headers)
-    print(f"[DEBUG] Response status: {resp.status_code}")
-    print(f"[DEBUG] Raw response text: {resp.text}")
-    if resp.status_code != 200:
-        print(f"[ERROR] Failed to fetch canvases. Status: {resp.status_code}")
-        sys.exit(1)
-    data = resp.json()
-    print(f"[DEBUG] Canvases response: {json.dumps(data, indent=2)}")
-    print("[DEBUG] Canvas IDs:")
-    for item in data.get("items", []):
-        print(f"- id: {item.get('id')} | name: {item.get('name')}")
-except Exception as e:
-    print(f"[ERROR] Exception in fetch_coda_canvases: {e}")
-    sys.exit(1)
-'''
-# --- END CANVAS ENDPOINT DEBUG BLOCK ---
-
-# --- PAGES CONTENT ENDPOINT DEBUG BLOCK ---
-canvas_page_id = "canvas-A5HjEaKOeB"  # Example canvas page ID
-pages_content_url = f"https://coda.io/apis/v1/docs/{CODA_DOC_ID}/pages/{canvas_page_id}/content"
-print(f"[DEBUG] Fetching page content from: {pages_content_url}")
-try:
-    resp = requests.get(pages_content_url, headers=coda_headers)
-    print(f"[DEBUG] Response status: {resp.status_code}")
-    print(f"[DEBUG] Raw response text: {resp.text}")
-    if resp.status_code != 200:
-        print(f"[ERROR] Failed to fetch page content. Status: {resp.status_code}")
-        sys.exit(1)
-    data = resp.json()
-    print(f"[DEBUG] Page content response: {json.dumps(data, indent=2)}")
-    print("[INFO] Page content endpoint check complete. Exiting for debug.")
-    sys.exit(0)
-except Exception as e:
-    print(f"[ERROR] Exception while fetching page content: {str(e)}")
-    sys.exit(1)
-# --- END PAGES CONTENT ENDPOINT DEBUG BLOCK ---
 
 def normalize(text):
     return unicodedata.normalize("NFKC", text.strip().lower())
@@ -81,292 +35,134 @@ def fetch_all_pages_flat():
             params["pageToken"] = next_token
 
         try:
-            print(f"\n[DEBUG] Fetching pages from: {base_url}")
-            if params:
-                print(f"[DEBUG] With params: {params}")
-            
+            print(f"[DEBUG] Fetching pages with params: {params}")
             resp = requests.get(base_url, headers=coda_headers, params=params)
-            print(f"[DEBUG] Response status: {resp.status_code}")
             
             if resp.status_code != 200:
-                print(f"[ERROR] Failed to fetch pages list")
-                print(f"[DEBUG] Response: {resp.text}")
-                raise requests.HTTPError("Failed to fetch pages list")
-                
+                print(f"[ERROR] Failed to fetch pages. Status: {resp.status_code}")
+                print(f"[ERROR] Response: {resp.text}")
+                sys.exit(1)
+
             data = resp.json()
+            items = data.get('items', [])
             
-            # Print the raw API response for the first batch
-            if not next_token:  # Only print for first batch
-                print("\n[DEBUG] Raw API response for first page batch:")
-                print(json.dumps(data, indent=2))
+            # Debug first page details
+            if len(all_pages) == 0 and items:
+                print("\n[DEBUG] First page details:")
+                print(json.dumps(items[0], indent=2))
+                print()
             
-            # Print details about each page in this batch
-            print("\n[DEBUG] Pages in this batch:")
-            for page in data.get("items", []):
-                print(f"\nPage: {page.get('name')}")
-                print(f"- id: {page.get('id')}")
-                print(f"- type: {page.get('type')}")
-                print(f"- href: {page.get('href')}")
-                print(f"- browserLink: {page.get('browserLink')}")
-                if page.get('name') == CUTOFF_TITLE:
-                    print("\n[DEBUG] Found cutoff page! Full details:")
-                    print(json.dumps(page, indent=2))
-            
-            all_pages.extend(data.get("items", []))
-            
-            next_token = data.get("nextPageToken")
-            if not next_token:
+            all_pages.extend(items)
+            print(f"[INFO] Fetched {len(items)} pages...")
+
+            next_token = data.get('nextPageToken')
+            if not next_token or len(all_pages) >= MAX_TEST_PAGES:
                 break
 
         except Exception as e:
-            print(f"[ERROR] Fetch failed at token: {next_token}")
-            print(f"[ERROR] Exception: {str(e)}")
-            raise e
+            print(f"[ERROR] Exception while fetching pages: {str(e)}")
+            sys.exit(1)
 
+    print(f"[INFO] Total pages fetched: {len(all_pages)}")
     return all_pages
 
-def fetch_coda_page_html(page_id, page_type=None):
-    """
-    Fetch HTML content for a Coda page, handling both regular and canvas pages.
-    """
-    print(f"\n[DEBUG] Fetching content for page_id: {page_id}, type: {page_type}")
-    
-    # For canvas pages (check both type and ID format)
-    is_canvas = page_id.startswith("canvas-")
-    
-    if is_canvas:
-        # Get the raw canvas ID by stripping the prefix
-        raw_id = page_id.replace("canvas-", "")
-        # Get the canvas nodes
-        url = f"https://coda.io/apis/v1/docs/{CODA_DOC_ID}/canvases/{raw_id}/nodes"
-        print(f"[DEBUG] Using canvas nodes endpoint: {url}")
-        
-        try:
-            print(f"[DEBUG] Making API request for canvas nodes...")
-            resp = requests.get(url, headers=coda_headers)
-            print(f"[DEBUG] Response status: {resp.status_code}")
-            print(f"[DEBUG] Response headers: {resp.headers}")
-            
-            if resp.status_code != 200:
-                print(f"[ERROR] Failed to fetch canvas nodes. Status: {resp.status_code}")
-                print(f"[DEBUG] Error response: {resp.text}")
-                return None
-                
-            data = resp.json()
-            print(f"[DEBUG] Canvas nodes response: {json.dumps(data, indent=2)}")
-            
-            # Extract content from nodes
-            content = []
-            for node in data.get("items", []):
-                node_name = node.get("name", "")
-                node_value = node.get("value", "")
-                if node_name or node_value:
-                    content.append(f"{node_name}: {node_value}")
-            
-            return "\n".join(content)
-            
-        except Exception as e:
-            print(f"[ERROR] Exception while fetching canvas nodes: {str(e)}")
-            return None
-            
-    else:
-        # For regular doc pages
-        url = f"https://coda.io/apis/v1/docs/{CODA_DOC_ID}/pages/{page_id}"
-        print(f"[DEBUG] Using regular page endpoint: {url}")
-        
-        try:
-            print(f"[DEBUG] Making API request...")
-            resp = requests.get(url, headers=coda_headers)
-            print(f"[DEBUG] Response status: {resp.status_code}")
-            print(f"[DEBUG] Response headers: {resp.headers}")
-            
-            if resp.status_code != 200:
-                print(f"[ERROR] Failed to fetch content. Status: {resp.status_code}")
-                print(f"[DEBUG] Error response: {resp.text}")
-                return None
-                
-            data = resp.json()
-            return data.get("body", "")
-            
-        except Exception as e:
-            print(f"[ERROR] Exception while fetching content: {str(e)}")
-            return None
+def setup_driver():
+    """Setup Chrome driver with appropriate options"""
+    options = Options()
+    # Use a unique user data directory for Selenium
+    options.add_argument("--user-data-dir=/Users/akibalogh/selenium-profile")
+    options.add_argument("--profile-directory=Default")
+    return webdriver.Chrome(options=options)
 
-def extract_sections_by_heading(html):
-    soup = BeautifulSoup(html, 'html.parser')
-    blocks = []
-    for el in soup.find_all(['h1', 'h2', 'h3', 'p', 'li']):
-        text = el.get_text(strip=True)
-        if not text:
-            continue
-        block_type = 'bulleted_list_item' if el.name == 'li' else 'paragraph'
-        blocks.append({
-            "object": "block",
-            "type": block_type,
-            block_type: {
-                "rich_text": [{
-                    "type": "text",
-                    "text": {"content": text},
-                    "annotations": {
-                        "bold": False, "italic": False,
-                        "underline": False, "strikethrough": False,
-                        "code": False, "color": "default"
-                    }
-                }]
-            }
-        })
-    return blocks
-
-def build_notion_blocks(section_blocks, source_url=None):
-    blocks = []
-    if source_url:
-        blocks.append({
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [{
-                    "type": "text",
-                    "text": {"content": f"Migrated from: {source_url}"}
-                }]
-            }
-        })
-    return blocks + section_blocks
-
-def create_notion_page(title, section_blocks, source_url=None):
-    if not section_blocks:
-        print(f"[SKIP] No content to migrate for '{title}'")
-        return
-    payload = {
-        "parent": {"page_id": NOTION_PARENT_PAGE_ID},
-        "properties": {
-            "title": {
-                "title": [{"type": "text", "text": {"content": title}}]
-            }
-        },
-        "children": build_notion_blocks(section_blocks, source_url)
-    }
-    url = 'https://api.notion.com/v1/pages'
-    resp = requests.post(url, headers=notion_headers, json=payload)
-    resp.raise_for_status()
-    print(f"[DONE] Migrated: {title}")
-
-def fetch_all_pages_with_children(doc_id):
-    print("[INFO] Fetching all pages with children...")
-    base_url = f'https://coda.io/apis/v1/docs/{doc_id}/pages'
-    all_pages = []
-    next_token = None
-
-    while True:
-        params = {}
-        if next_token:
-            params["pageToken"] = next_token
-
-        try:
-            resp = requests.get(base_url, headers=coda_headers, params=params)
-            resp.raise_for_status()
-        except requests.HTTPError as e:
-            print(f"[ERROR] Fetch failed at token: {next_token}")
-            print(f"[ERROR] Response: {resp.text}")
-            raise e
-
-        data = resp.json()
-        pages = data.get("items", [])
-        
-        # For each page, fetch its children
-        for page in pages:
-            page_id = page.get('id')
-            if page_id:
-                try:
-                    children_url = f"{base_url}/{page_id}/children"
-                    children_resp = requests.get(children_url, headers=coda_headers)
-                    if children_resp.status_code == 200:
-                        children_data = children_resp.json()
-                        page['children'] = children_data.get('items', [])
-                except Exception as e:
-                    print(f"[WARN] Failed to fetch children for page {page_id}: {e}")
-                    page['children'] = []
-
-        all_pages.extend(pages)
-        next_token = data.get("nextPageToken")
-        if not next_token:
-            break
-
-    return all_pages
-
-def fetch_coda_canvases():
-    print("[DEBUG] fetch_coda_canvases() called!")
-    url = f"https://coda.io/apis/v1/docs/{CODA_DOC_ID}/canvases"
-    print(f"[DEBUG] Fetching canvases from: {url}")
+def extract_content(driver, url):
+    """Extract formatted content from a Coda page using robust selectors and JS."""
     try:
-        resp = requests.get(url, headers=coda_headers)
-        print(f"[DEBUG] Response status: {resp.status_code}")
-        print(f"[DEBUG] Raw response text: {resp.text}")
-        if resp.status_code != 200:
-            print(f"[ERROR] Failed to fetch canvases. Status: {resp.status_code}")
-            return
-        data = resp.json()
-        print(f"[DEBUG] Canvases response: {json.dumps(data, indent=2)}")
-        print("[DEBUG] Canvas IDs:")
-        for item in data.get("items", []):
-            print(f"- id: {item.get('id')} | name: {item.get('name')}")
+        print(f"[DEBUG] Navigating to URL: {url}")
+        driver.get(url)
+        print("[DEBUG] Waiting for Coda main content...")
+        # Wait for any of the main content containers
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, '[data-coda-ui-id="canvas"], [data-coda-ui-id="canvas-content"], [data-coda-ui-id="page-content"]'))
+        )
+        time.sleep(2)  # Let dynamic content load
+        # Find the first visible main content container
+        js = '''
+        let contentElements = document.querySelectorAll('[data-coda-ui-id="canvas"], [data-coda-ui-id="canvas-content"], [data-coda-ui-id="page-content"]');
+        for (let element of contentElements) {
+            if (element.offsetWidth > 0 && element.offsetHeight > 0) {
+                return element.innerHTML;
+            }
+        }
+        return null;
+        '''
+        html_content = driver.execute_script(js)
+        if not html_content:
+            print("[ERROR] Could not find visible Coda content container.")
+            return None, None
+        # Clean and parse HTML
+        soup = BeautifulSoup(html_content, 'html.parser')
+        for script in soup(["script", "style"]):
+            script.decompose()
+        clean_html = str(soup)
+        clean_text = soup.get_text(separator='\n', strip=True)
+        return clean_html, clean_text
     except Exception as e:
-        print(f"[ERROR] Exception while fetching canvases: {str(e)}")
+        print(f"[ERROR] Failed to extract content: {str(e)}")
+        return None, None
 
-def run():
-    print("[INFO] Starting migration...")
-    fetch_coda_canvases()
-    all_pages = fetch_all_pages_flat()
+def save_content(html_content, text_content, page_name):
+    """Save extracted content to files"""
+    if not os.path.exists('output'):
+        os.makedirs('output')
+    clean_name = "".join(c for c in page_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    if html_content:
+        html_path = f'output/{clean_name}.html'
+        with open(html_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        print(f"[INFO] Saved HTML content to {html_path}")
+    if text_content:
+        text_path = f'output/{clean_name}.txt'
+        with open(text_path, 'w', encoding='utf-8') as f:
+            f.write(text_content)
+        print(f"[INFO] Saved text content to {text_path}")
 
-    # Locate the 'Client Meeting Notes' page
-    cutoff_idx = next((i for i, p in enumerate(all_pages) if normalize(p.get("name", "")) == normalize(CUTOFF_TITLE)), None)
-    if cutoff_idx is None:
-        print(f"[ERROR] Could not find '{CUTOFF_TITLE}' in pages")
+def main():
+    pages = fetch_all_pages_flat()
+    if not pages:
+        print("[ERROR] No pages found!")
         return
-    print(f"[INFO] Found '{CUTOFF_TITLE}' at index {cutoff_idx}")
+    
+    # Find the index of 'Client Meeting Notes'
+    start_idx = None
+    for i, page in enumerate(pages):
+        if normalize(page.get('name', '')) == normalize('Client Meeting Notes'):
+            start_idx = i + 1
+            break
+    if start_idx is None:
+        print("[ERROR] Could not find 'Client Meeting Notes' in page list!")
+        return
+    
+    # Process the next 2 pages after 'Client Meeting Notes'
+    pages_to_process = pages[start_idx:start_idx+2]
+    if not pages_to_process:
+        print("[ERROR] No pages found after 'Client Meeting Notes'!")
+        return
+    
+    driver = setup_driver()
+    try:
+        for page in pages_to_process:
+            page_name = page.get('name', 'unnamed_page')
+            page_url = page.get('browserLink', '')  # Use browserLink directly
+            print(f"\n[INFO] Processing page: {page_name}")
+            print(f"[DEBUG] URL: {page_url}")
+            html_content, text_content = extract_content(driver, page_url)
+            if html_content and text_content:
+                save_content(html_content, text_content, page_name)
+            else:
+                print(f"[WARN] No content extracted for {page_name}")
+            time.sleep(2)
+    finally:
+        driver.quit()
 
-    # Get all pages that come after the cutoff (limit to first 5 for testing)
-    following_pages = all_pages[cutoff_idx + 1:cutoff_idx + 6]  # Only get 5 pages
-    print(f"\n[DEBUG] First 5 pages after cutoff:")
-    for p in following_pages:
-        print(f"- {p.get('name')} | id: {p.get('id')} | type: {p.get('type')}")
-
-    # Attempt to migrate each page
-    for page in following_pages:
-        title = page.get("name", "Untitled")
-        page_id = page.get("id")
-        page_type = page.get("type")
-        
-        if not page_id:
-            print(f"[SKIP] No ID for page: {title}")
-            continue
-
-        print(f"\n[INFO] Processing: {title} (ID: {page_id}, Type: {page_type})")
-        
-        try:
-            # Fetch page content with type information
-            html = fetch_coda_page_html(page_id, page_type)
-            
-            if html is None:
-                print(f"[ERROR] Failed to fetch content for '{title}'")
-                continue
-                
-            # Extract and process content
-            section_blocks = extract_sections_by_heading(html)
-            
-            # Create Notion page
-            source_url = f"https://coda.io/d/{CODA_DOC_ID}/_/{page_id}"
-            create_notion_page(title, section_blocks, source_url)
-            
-        except requests.HTTPError as e:
-            print(f"[ERROR] HTTP error for '{title}': {str(e)}")
-            continue
-        except Exception as e:
-            print(f"[ERROR] Failed to process '{title}': {str(e)}")
-            continue
-
-    print("\n[INFO] Test migration completed")
-
-if __name__ == '__main__':
-    fetch_coda_canvases()
-    print("\n================ END OF CANVAS LIST ================\n")
-    run()
+if __name__ == "__main__":
+    main()
