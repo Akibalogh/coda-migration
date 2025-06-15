@@ -2,6 +2,7 @@ import requests
 import json
 import unicodedata
 from bs4 import BeautifulSoup
+import time
 
 # --- Configuration ---
 CODA_API_TOKEN = '3c10b406-488c-49ac-a483-4b912be6fc23'
@@ -21,49 +22,77 @@ notion_headers = {
 def normalize(text):
     return unicodedata.normalize("NFKC", text.strip().lower())
 
-def fetch_all_root_pages():
-    print("[INFO] Fetching all Coda root pages...")
+def fetch_all_pages_flat():
+    print("[INFO] Fetching all Coda pages (flat list)...")
     base_url = f'https://coda.io/apis/v1/docs/{CODA_DOC_ID}/pages'
     all_pages = []
     next_token = None
 
     while True:
-        params = {"pageToken": next_token} if next_token else {}
-        resp = requests.get(base_url, headers=coda_headers, params=params)
-        resp.raise_for_status()
+        params = {}
+        if next_token:
+            params["pageToken"] = next_token
+
+        try:
+            resp = requests.get(base_url, headers=coda_headers, params=params)
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            print(f"[ERROR] Fetch failed at token: {next_token}")
+            print(f"[ERROR] Response: {resp.text}")
+            raise e
+
         data = resp.json()
-        items = data.get("items", [])
-        all_pages.extend(items)
+        all_pages.extend(data.get("items", []))
+
         next_token = data.get("nextPageToken")
         if not next_token:
             break
 
     return all_pages
 
-def fetch_coda_page_html(page_id_or_canvas_id, is_canvas=True):
-    if is_canvas:
-        browser_url = f'https://coda.io/d/_d{CODA_DOC_ID}/_{page_id_or_canvas_id[7:]}'
+def fetch_coda_page_html(page_id):
+    """
+    Fetch HTML content for a Coda page.
+    page_id should be the full ID including 'canvas-' prefix if present.
+    """
+    # If page_id already has canvas- prefix, use it directly
+    if page_id.startswith('canvas-'):
+        urls = [
+            f"https://coda.io/apis/v1/docs/{CODA_DOC_ID}/pages/{page_id}/content",
+            f"https://coda.io/apis/v1/docs/{CODA_DOC_ID}/pages/{page_id}"
+        ]
     else:
-        browser_url = f'https://coda.io/d/_d{CODA_DOC_ID}/_{page_id_or_canvas_id}'
+        # If no canvas- prefix, try both with and without
+        urls = [
+            f"https://coda.io/apis/v1/docs/{CODA_DOC_ID}/pages/{page_id}/content",
+            f"https://coda.io/apis/v1/docs/{CODA_DOC_ID}/pages/canvas-{page_id}/content",
+            f"https://coda.io/apis/v1/docs/{CODA_DOC_ID}/pages/{page_id}",
+            f"https://coda.io/apis/v1/docs/{CODA_DOC_ID}/pages/canvas-{page_id}"
+        ]
 
-    print(f"[INFO] Fetching Coda browser page: {browser_url}")
-    resp = requests.get(browser_url)
-    resp.raise_for_status()
-    return resp.text
+    for url in urls:
+        try:
+            print(f"[DEBUG] Trying URL: {url}")
+            resp = requests.get(url, headers=coda_headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                if 'body' in data:
+                    return data['body']
+        except Exception as e:
+            print(f"[DEBUG] Failed with URL {url}: {e}")
+            continue
+
+    raise requests.HTTPError("Failed to fetch Coda page content.")
 
 def extract_sections_by_heading(html):
-    print("[INFO] Parsing HTML into sections by headings")
     soup = BeautifulSoup(html, 'html.parser')
     blocks = []
-
     for el in soup.find_all(['h1', 'h2', 'h3', 'p', 'li']):
-        tag = el.name
         text = el.get_text(strip=True)
         if not text:
             continue
-
-        block_type = 'bulleted_list_item' if tag == 'li' else 'paragraph'
-        block = {
+        block_type = 'bulleted_list_item' if el.name == 'li' else 'paragraph'
+        blocks.append({
             "object": "block",
             "type": block_type,
             block_type: {
@@ -71,18 +100,13 @@ def extract_sections_by_heading(html):
                     "type": "text",
                     "text": {"content": text},
                     "annotations": {
-                        "bold": False,
-                        "italic": False,
-                        "underline": False,
-                        "strikethrough": False,
-                        "code": False,
-                        "color": "default"
+                        "bold": False, "italic": False,
+                        "underline": False, "strikethrough": False,
+                        "code": False, "color": "default"
                     }
                 }]
             }
-        }
-        blocks.append(block)
-
+        })
     return blocks
 
 def build_notion_blocks(section_blocks, source_url=None):
@@ -98,12 +122,12 @@ def build_notion_blocks(section_blocks, source_url=None):
                 }]
             }
         })
-    blocks.extend(section_blocks)
-    return blocks
+    return blocks + section_blocks
 
 def create_notion_page(title, section_blocks, source_url=None):
-    print(f"[INFO] Creating Notion page: {title}")
-    children_blocks = build_notion_blocks(section_blocks, source_url)
+    if not section_blocks:
+        print(f"[SKIP] No content to migrate for '{title}'")
+        return
     payload = {
         "parent": {"page_id": NOTION_PARENT_PAGE_ID},
         "properties": {
@@ -111,37 +135,98 @@ def create_notion_page(title, section_blocks, source_url=None):
                 "title": [{"type": "text", "text": {"content": title}}]
             }
         },
-        "children": children_blocks
+        "children": build_notion_blocks(section_blocks, source_url)
     }
     url = 'https://api.notion.com/v1/pages'
     resp = requests.post(url, headers=notion_headers, json=payload)
     resp.raise_for_status()
-    print(f"[DONE] Created Notion page: {title}")
+    print(f"[DONE] Migrated: {title}")
+
+def fetch_all_pages_with_children(doc_id):
+    print("[INFO] Fetching all pages with children...")
+    base_url = f'https://coda.io/apis/v1/docs/{doc_id}/pages'
+    all_pages = []
+    next_token = None
+
+    while True:
+        params = {}
+        if next_token:
+            params["pageToken"] = next_token
+
+        try:
+            resp = requests.get(base_url, headers=coda_headers, params=params)
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            print(f"[ERROR] Fetch failed at token: {next_token}")
+            print(f"[ERROR] Response: {resp.text}")
+            raise e
+
+        data = resp.json()
+        pages = data.get("items", [])
+        
+        # For each page, fetch its children
+        for page in pages:
+            page_id = page.get('id')
+            if page_id:
+                try:
+                    children_url = f"{base_url}/{page_id}/children"
+                    children_resp = requests.get(children_url, headers=coda_headers)
+                    if children_resp.status_code == 200:
+                        children_data = children_resp.json()
+                        page['children'] = children_data.get('items', [])
+                except Exception as e:
+                    print(f"[WARN] Failed to fetch children for page {page_id}: {e}")
+                    page['children'] = []
+
+        all_pages.extend(pages)
+        next_token = data.get("nextPageToken")
+        if not next_token:
+            break
+
+    return all_pages
 
 def run():
-    print("[INFO] Starting migration run...")
-    pages = fetch_all_root_pages()
-    cutoff_idx = next((i for i, p in enumerate(pages) if normalize(p.get('name', '')) == normalize(CUTOFF_TITLE)), None)
+    print("[INFO] Starting migration...")
+    all_pages = fetch_all_pages_flat()
 
+    # Locate the 'Client Meeting Notes' page
+    cutoff_idx = next((i for i, p in enumerate(all_pages) if normalize(p.get("name", "")) == normalize(CUTOFF_TITLE)), None)
     if cutoff_idx is None:
-        print("Could not find 'Client Meeting Notes'.")
+        print(f"[ERROR] Could not find '{CUTOFF_TITLE}' in pages")
         return
+    print(f"[INFO] Found '{CUTOFF_TITLE}' at index {cutoff_idx}")
 
-    filtered_pages = pages[cutoff_idx + 1:]
-    if not filtered_pages:
-        print("No pages found after Client Meeting Notes.")
-        return
+    # Get all pages that come after the cutoff
+    following_pages = all_pages[cutoff_idx + 1:]
+    print(f"\n[DEBUG] Pages after cutoff:")
+    for p in following_pages[:5]:
+        print(f"- {p.get('name')} | id: {p.get('id')} | type: {p.get('type')}")
 
-    first_page = filtered_pages[0]
-    title = first_page.get("name", "Untitled")
-    browser_url = first_page.get("browserLink")
-    page_id = first_page.get("id").replace("canvas-", "")
+    # Attempt to migrate the first valid page (regardless of type)
+    for page in following_pages:
+        title = page.get("name", "Untitled")
+        page_id = page.get("id")
+        browser_url = page.get("browserLink")
 
-    print(f"Fetching and sending: {title}")
-    html = fetch_coda_page_html(page_id, is_canvas=True)
-    section_blocks = extract_sections_by_heading(html)
-    print(f"[INFO] Extracted {len(section_blocks)} blocks.")
-    create_notion_page(title, section_blocks, source_url=browser_url)
+        if not page_id:
+            print(f"[SKIP] Page missing ID: {title}")
+            continue
+
+        print(f"[INFO] Migrating page: {title} | ID: {page_id} | Type: {page.get('type')}")
+        try:
+            html = fetch_coda_page_html(page_id)
+            if not html or not html.strip():
+                print(f"[SKIP] No HTML content in page: {title}")
+                continue
+
+            section_blocks = extract_sections_by_heading(html)
+            create_notion_page(title, section_blocks, browser_url)
+            print(f"[SUCCESS] Migrated: {title}")
+            break  # stop after first successful migration
+
+        except Exception as e:
+            print(f"[ERROR] Failed to fetch or migrate page '{title}': {e}")
+            continue
 
 if __name__ == '__main__':
     run()
