@@ -74,18 +74,67 @@ def setup_driver():
     options.add_argument("--profile-directory=Default")
     return webdriver.Chrome(options=options)
 
+def postprocess_coda_lists(html_content):
+    """Convert Coda's kr-ulist, kr-listitem, and block-level-X classes into nested <ul><li> HTML lists."""
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Find all list items and group by block level
+    items = []
+    for div in soup.find_all('div', class_=lambda c: c and 'kr-listitem' in c):
+        # Determine nesting level
+        classes = div.get('class', [])
+        level = 0
+        for cls in classes:
+            if cls.startswith('block-level-'):
+                try:
+                    level = int(cls.split('-')[-1])
+                except:
+                    pass
+        # Get the text content
+        text = div.get_text(strip=True)
+        items.append({'div': div, 'level': level, 'text': text})
+    
+    # Build nested list structure
+    if not items:
+        return str(soup)
+    
+    root = []
+    stack = [{'children': root, 'level': -1}]
+    for item in items:
+        node = {'text': item['text'], 'children': []}
+        while item['level'] <= stack[-1]['level']:
+            stack.pop()
+        stack[-1]['children'].append(node)
+        stack.append({'children': node['children'], 'level': item['level']})
+    
+    def build_html(nodes):
+        if not nodes:
+            return ''
+        html = '<ul>'
+        for node in nodes:
+            html += f'<li>{node["text"]}{build_html(node["children"])}</li>'
+        html += '</ul>'
+        return html
+    
+    # Remove all original kr-listitem divs
+    for item in items:
+        item['div'].decompose()
+    
+    # Insert the new HTML at the end of the main content
+    main_content = soup
+    main_content.append(BeautifulSoup(build_html(root), 'html.parser'))
+    return str(soup)
+
 def extract_content(driver, url):
     """Extract formatted content from a Coda page using robust selectors and JS."""
     try:
         print(f"[DEBUG] Navigating to URL: {url}")
         driver.get(url)
         print("[DEBUG] Waiting for Coda main content...")
-        # Wait for any of the main content containers
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, '[data-coda-ui-id="canvas"], [data-coda-ui-id="canvas-content"], [data-coda-ui-id="page-content"]'))
         )
-        time.sleep(2)  # Let dynamic content load
-        # Find the first visible main content container
+        time.sleep(2)
         js = '''
         let contentElements = document.querySelectorAll('[data-coda-ui-id="canvas"], [data-coda-ui-id="canvas-content"], [data-coda-ui-id="page-content"]');
         for (let element of contentElements) {
@@ -104,6 +153,8 @@ def extract_content(driver, url):
         for script in soup(["script", "style"]):
             script.decompose()
         clean_html = str(soup)
+        # Post-process for nested lists
+        clean_html = postprocess_coda_lists(clean_html)
         clean_text = soup.get_text(separator='\n', strip=True)
         return clean_html, clean_text
     except Exception as e:
