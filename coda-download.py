@@ -409,34 +409,22 @@ def main():
         print("[ERROR] No pages found!")
         sys.exit(1)
 
-    # Find the specific page by name
-    target_name = "Stacks Introductory Meeting - 2/7/22"
-    target_page = None
-    for page in pages:
-        if normalize(page.get('name', '')) == normalize(target_name):
-            target_page = page
-            break
-
-    if not target_page:
-        print(f"[ERROR] Could not find page: {target_name}")
-        sys.exit(1)
-
     driver = setup_driver()
     try:
-        page_name = target_page.get('name', 'unnamed_page')
-        page_url = target_page.get('browserLink', '')
-        print(f"\n[INFO] Processing page: {page_name}")
-        print(f"[DEBUG] URL: {page_url}")
-        html_content, text_content = extract_content(driver, page_url)
-        print(f"[DEBUG] html_content is {'present' if html_content else 'missing'}")
-        print(f"[DEBUG] text_content is {'present' if text_content else 'missing'}")
-        if html_content and text_content:
-            print("[DEBUG] Both html_content and text_content present. Proceeding to save and create Notion page.")
-            save_content(html_content, text_content, page_name)
-            create_notion_page(page_name, html_content)
-        else:
-            print(f"[ERROR] No content extracted for {page_name}")
-            sys.exit(1)
+        for page in pages:
+            page_name = page.get('name', 'unnamed_page')
+            page_url = page.get('browserLink', '')
+            print(f"\n[INFO] Processing page: {page_name}")
+            print(f"[DEBUG] URL: {page_url}")
+            html_content, text_content = extract_content(driver, page_url)
+            print(f"[DEBUG] html_content is {'present' if html_content else 'missing'}")
+            print(f"[DEBUG] text_content is {'present' if text_content else 'missing'}")
+            if html_content and text_content:
+                print("[DEBUG] Both html_content and text_content present. Proceeding to save and create Notion page.")
+                save_content(html_content, text_content, page_name)
+                create_notion_page(page_name, html_content)
+            else:
+                print(f"[ERROR] No content extracted for {page_name}")
     finally:
         driver.quit()
 
