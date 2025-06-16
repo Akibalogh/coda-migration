@@ -11,18 +11,31 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
+import re
+from dotenv import load_dotenv
+
+# Load environment variables from .env if present
+load_dotenv()
 
 # Configuration
-CODA_API_TOKEN = '3c10b406-488c-49ac-a483-4b912be6fc23'
+CODA_API_TOKEN = os.getenv('CODA_API_TOKEN')
 CODA_DOC_ID = '0eJEEjA-GU'
 # MAX_TEST_PAGES = 2  # Remove page limit to process all pages
 MAX_TEST_PAGES = None
 
+if not CODA_API_TOKEN:
+    print('[ERROR] CODA_API_TOKEN not set in environment or .env file.')
+    sys.exit(1)
+
+NOTION_API_TOKEN = os.getenv('NOTION_API_TOKEN')
+NOTION_PARENT_PAGE_ID = '1dc636dd0ba580a6b3cbe3074911045f'
+
+if not NOTION_API_TOKEN:
+    print('[ERROR] NOTION_API_TOKEN not set in environment or .env file.')
+    sys.exit(1)
+
 # Headers
 coda_headers = {'Authorization': f'Bearer {CODA_API_TOKEN}'}
-
-NOTION_API_TOKEN = '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'
-NOTION_PARENT_PAGE_ID = '1dc636dd0ba580a6b3cbe3074911045f'
 notion_headers = {
     'Authorization': f'Bearer {NOTION_API_TOKEN}',
     'Notion-Version': '2022-06-28',
@@ -354,8 +367,6 @@ def html_to_notion_blocks(html):
 
 def create_notion_page(title, html):
     blocks = html_to_notion_blocks(html)
-    print(f"[DEBUG] Total blocks to send: {len(blocks)}")
-    # Notion API limit: 100 blocks per request
     first_chunk = blocks[:100]
     remaining = blocks[100:]
     payload = {
@@ -366,42 +377,34 @@ def create_notion_page(title, html):
         "children": first_chunk
     }
     url = 'https://api.notion.com/v1/pages'
-    print("[DEBUG] Sending first chunk to Notion API...")
-    print("Payload:", json.dumps(payload, indent=2))
     r = requests.post(url, headers=notion_headers, json=payload)
-    print("[DEBUG] Notion API response:")
-    print("Status Code:", r.status_code)
-    print("Response:", r.text)
     if not r.ok:
         print("[ERROR] Notion API failed:")
         print("Status Code:", r.status_code)
         print("Response:", r.text)
-        print("Payload:", json.dumps(payload, indent=2))
         return
-    notion_url = r.json().get("url", "(URL missing)")
     page_id = r.json().get("id")
-    print(f"[✓] Created Notion page: {title}")
-    print(f"    ↳ {notion_url}")
     # Append remaining blocks in chunks of 100
     append_url = f"https://api.notion.com/v1/blocks/{page_id}/children"
-    chunk_num = 2
     while remaining:
         chunk = remaining[:100]
         remaining = remaining[100:]
         append_payload = {"children": chunk}
-        print(f"[DEBUG] Appending chunk {chunk_num} to Notion page...")
-        print("Payload:", json.dumps(append_payload, indent=2))
         r = requests.patch(append_url, headers=notion_headers, json=append_payload)
-        print(f"[DEBUG] Notion API response for chunk {chunk_num}:")
-        print("Status Code:", r.status_code)
-        print("Response:", r.text)
         if not r.ok:
-            print(f"[ERROR] Notion API failed on chunk {chunk_num}:")
+            print(f"[ERROR] Notion API failed on chunk append:")
             print("Status Code:", r.status_code)
             print("Response:", r.text)
-            print("Payload:", json.dumps(append_payload, indent=2))
             return
-        chunk_num += 1
+
+def extract_title_and_date(page_name):
+    # Match patterns like 'Title 10/20/21' or 'Title - 10/20/21'
+    match = re.match(r"^(.*?)(?:\s*-)?\s*(\d{1,2}/\d{1,2}/\d{2,4})$", page_name)
+    if match:
+        title = match.group(1).strip()
+        date = match.group(2)
+        return title, date
+    return page_name, None
 
 def main():
     pages = fetch_all_pages_flat()
@@ -409,20 +412,50 @@ def main():
         print("[ERROR] No pages found!")
         sys.exit(1)
 
+    start_from = "Client Meeting Notes"
+    found_start = False
+    skip_first = True
+
     driver = setup_driver()
     try:
         for page in pages:
             page_name = page.get('name', 'unnamed_page')
+            if not found_start:
+                if normalize(page_name) == normalize(start_from):
+                    found_start = True
+                    skip_first = True
+                else:
+                    continue
+            if skip_first:
+                skip_first = False
+                continue
+            print(f"[INFO] Processing page: {page_name}")
             page_url = page.get('browserLink', '')
-            print(f"\n[INFO] Processing page: {page_name}")
-            print(f"[DEBUG] URL: {page_url}")
             html_content, text_content = extract_content(driver, page_url)
-            print(f"[DEBUG] html_content is {'present' if html_content else 'missing'}")
-            print(f"[DEBUG] text_content is {'present' if text_content else 'missing'}")
             if html_content and text_content:
-                print("[DEBUG] Both html_content and text_content present. Proceeding to save and create Notion page.")
                 save_content(html_content, text_content, page_name)
-                create_notion_page(page_name, html_content)
+                notion_title, call_date = extract_title_and_date(page_name)
+                if call_date:
+                    soup = BeautifulSoup(html_content, 'html.parser')
+                    first_block = soup.find(['p', 'div'])
+                    if first_block:
+                        strong_tag = soup.new_tag('strong')
+                        strong_tag.string = f'Call {call_date} '
+                        # Insert at the beginning, with a space if needed
+                        if first_block.contents:
+                            first_block.insert(0, strong_tag)
+                            # Optionally add a space after the strong tag if not already present
+                            if (len(first_block.contents) > 1 and
+                                isinstance(first_block.contents[1], str) and
+                                not first_block.contents[1].startswith(' ')):
+                                first_block.insert(1, ' ')
+                        else:
+                            first_block.append(strong_tag)
+                        html_content = str(soup)
+                    else:
+                        html_content = f'<p><strong>Call {call_date}</strong></p>' + html_content.lstrip('\n').lstrip('\r').lstrip()
+                create_notion_page(notion_title, html_content)
+                print(f"[✓] Notion page created: {notion_title}")
             else:
                 print(f"[ERROR] No content extracted for {page_name}")
     finally:
