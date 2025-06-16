@@ -362,6 +362,33 @@ def html_to_notion_blocks(html):
             items.append(block)
         return items
 
+    def parse_ordered_list(ol):
+        items = []
+        for li in ol.find_all('li', recursive=False):
+            rich_text = parse_rich_text(li)
+            if not rich_text:
+                text = li.get_text(strip=True)
+                if text:
+                    rich_text = [{
+                        "type": "text",
+                        "text": {"content": text},
+                        "annotations": {"bold": False, "italic": False, "underline": False, "strikethrough": False, "code": False, "color": "default"}
+                    }]
+            block = {
+                "object": "block",
+                "type": "numbered_list_item",
+                "numbered_list_item": {
+                    "rich_text": rich_text
+                }
+            }
+            nested_ols = li.find_all('ol', recursive=False)
+            if nested_ols:
+                block["numbered_list_item"]["children"] = []
+                for nested_ol in nested_ols:
+                    block["numbered_list_item"]["children"].extend(parse_ordered_list(nested_ol))
+            items.append(block)
+        return items
+
     for el in elements:
         if isinstance(el, NavigableString):
             if str(el).strip() == '':
@@ -392,6 +419,8 @@ def html_to_notion_blocks(html):
             })
         elif tag == 'ul':
             blocks += parse_list(el)
+        elif tag == 'ol':
+            blocks += parse_ordered_list(el)
         elif tag in ['p', 'div']:
             rich_text = parse_rich_text(el)
             if not rich_text:
