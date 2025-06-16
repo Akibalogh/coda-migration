@@ -85,8 +85,6 @@ def setup_driver():
 def postprocess_coda_lists(html_content):
     """Convert lines starting with '*' or '-' in kr-line divs into nested <ul><li> HTML lists. Also preserve the first non-list, bolded line as a bold paragraph, and skip header/title lines."""
     from bs4 import BeautifulSoup, Tag
-    print('[DEBUG] Entering postprocess_coda_lists')
-    print(f'[DEBUG] html_content type: {type(html_content)}')
     soup = BeautifulSoup(html_content, 'html.parser')
 
     # Remove Coda header and page title if present
@@ -96,7 +94,6 @@ def postprocess_coda_lists(html_content):
 
     # Find all kr-line divs in order
     lines = soup.find_all('div', class_=lambda c: c and 'kr-line' in c)
-    print(f'[DEBUG] Found {len(lines)} kr-line divs')
     new_blocks = []
     i = 0
     first_bolded_done = False
@@ -107,7 +104,6 @@ def postprocess_coda_lists(html_content):
             text = ''
         # If this is the first non-list, bolded line, preserve as bold paragraph
         if not first_bolded_done and not text.startswith('*') and not text.startswith('-'):
-            # Check for bold class in any span
             bold_span = div.find('span', class_=lambda c: c and 'kr-bold' in c)
             if bold_span:
                 p = soup.new_tag('p')
@@ -166,33 +162,29 @@ def postprocess_coda_lists(html_content):
     for div in lines:
         try:
             div.decompose()
-        except Exception as e:
-            print(f"[DEBUG] Failed to decompose div: {e}")
+        except Exception:
+            pass
     main_container = soup
     # Filter out any tags with name=None or non-Tag objects
+    from bs4 import Tag
     filtered_blocks = []
     for block in new_blocks:
         if not isinstance(block, Tag):
-            print(f"[DEBUG] Skipping non-Tag block: type={type(block)}, id={id(block)}")
             continue
         if block.name is None:
-            print(f"[DEBUG] Skipping block with name=None: type={type(block)}, id={id(block)}")
             continue
         filtered_blocks.append(block)
     for block in filtered_blocks:
         try:
             main_container.append(block)
-        except Exception as e:
-            print(f"[DEBUG] Failed to append block: {e}")
-    print('[DEBUG] Leaving postprocess_coda_lists')
+        except Exception:
+            pass
     return str(soup)
 
 def extract_content(driver, url):
     """Extract formatted content from a Coda page using robust selectors and JS."""
     try:
-        print(f"[DEBUG] Navigating to URL: {url}")
         driver.get(url)
-        print("[DEBUG] Waiting for Coda main content...")
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, '[data-coda-ui-id="canvas"], [data-coda-ui-id="canvas-content"], [data-coda-ui-id="page-content"]'))
         )
@@ -207,25 +199,16 @@ def extract_content(driver, url):
         return null;
         '''
         html_content = driver.execute_script(js)
-        print(f"[DEBUG] html_content type: {type(html_content)}")
         if not html_content:
-            print("[ERROR] Could not find visible Coda content container.")
             return None, None
         soup = BeautifulSoup(html_content, 'html.parser')
         for script in soup(["script", "style"]):
             script.decompose()
         clean_html = str(soup)
-        print(f"[DEBUG] clean_html type: {type(clean_html)}")
-        # Post-process for nested lists
         clean_html = postprocess_coda_lists(clean_html)
-        print(f"[DEBUG] postprocessed clean_html type: {type(clean_html)}")
         clean_text = soup.get_text(separator='\n', strip=True)
-        print(f"[DEBUG] clean_text type: {type(clean_text)}")
         return clean_html, clean_text
     except Exception as e:
-        print(f"[ERROR] Failed to extract content: {str(e)}")
-        import traceback
-        traceback.print_exc()
         return None, None
 
 def save_content(html_content, text_content, page_name):
@@ -313,7 +296,6 @@ def html_to_notion_blocks(html):
     for el in elements:
         if isinstance(el, NavigableString):
             if str(el).strip() == '':
-                # Empty line
                 blocks.append({
                     "object": "block",
                     "type": "paragraph",
