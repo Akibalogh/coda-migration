@@ -354,15 +354,24 @@ def html_to_notion_blocks(html):
 
 def create_notion_page(title, html):
     blocks = html_to_notion_blocks(html)
+    print(f"[DEBUG] Total blocks to send: {len(blocks)}")
+    # Notion API limit: 100 blocks per request
+    first_chunk = blocks[:100]
+    remaining = blocks[100:]
     payload = {
         "parent": {"page_id": NOTION_PARENT_PAGE_ID},
         "properties": {
             "title": {"title": [{"type": "text", "text": {"content": title}}]}
         },
-        "children": blocks
+        "children": first_chunk
     }
     url = 'https://api.notion.com/v1/pages'
+    print("[DEBUG] Sending first chunk to Notion API...")
+    print("Payload:", json.dumps(payload, indent=2))
     r = requests.post(url, headers=notion_headers, json=payload)
+    print("[DEBUG] Notion API response:")
+    print("Status Code:", r.status_code)
+    print("Response:", r.text)
     if not r.ok:
         print("[ERROR] Notion API failed:")
         print("Status Code:", r.status_code)
@@ -370,45 +379,64 @@ def create_notion_page(title, html):
         print("Payload:", json.dumps(payload, indent=2))
         return
     notion_url = r.json().get("url", "(URL missing)")
+    page_id = r.json().get("id")
     print(f"[✓] Created Notion page: {title}")
     print(f"    ↳ {notion_url}")
+    # Append remaining blocks in chunks of 100
+    append_url = f"https://api.notion.com/v1/blocks/{page_id}/children"
+    chunk_num = 2
+    while remaining:
+        chunk = remaining[:100]
+        remaining = remaining[100:]
+        append_payload = {"children": chunk}
+        print(f"[DEBUG] Appending chunk {chunk_num} to Notion page...")
+        print("Payload:", json.dumps(append_payload, indent=2))
+        r = requests.patch(append_url, headers=notion_headers, json=append_payload)
+        print(f"[DEBUG] Notion API response for chunk {chunk_num}:")
+        print("Status Code:", r.status_code)
+        print("Response:", r.text)
+        if not r.ok:
+            print(f"[ERROR] Notion API failed on chunk {chunk_num}:")
+            print("Status Code:", r.status_code)
+            print("Response:", r.text)
+            print("Payload:", json.dumps(append_payload, indent=2))
+            return
+        chunk_num += 1
 
 def main():
     pages = fetch_all_pages_flat()
     if not pages:
         print("[ERROR] No pages found!")
-        return
-    
-    # Find the index of 'Client Meeting Notes'
-    start_idx = None
-    for i, page in enumerate(pages):
-        if normalize(page.get('name', '')) == normalize('Client Meeting Notes'):
-            start_idx = i + 1
+        sys.exit(1)
+
+    # Find the specific page by name
+    target_name = "Stacks Introductory Meeting - 2/7/22"
+    target_page = None
+    for page in pages:
+        if normalize(page.get('name', '')) == normalize(target_name):
+            target_page = page
             break
-    if start_idx is None:
-        print("[ERROR] Could not find 'Client Meeting Notes' in page list!")
-        return
-    
-    # Process all pages after 'Client Meeting Notes'
-    pages_to_process = pages[start_idx:]
-    if not pages_to_process:
-        print("[ERROR] No pages found after 'Client Meeting Notes'!")
-        return
-    
+
+    if not target_page:
+        print(f"[ERROR] Could not find page: {target_name}")
+        sys.exit(1)
+
     driver = setup_driver()
     try:
-        for page in pages_to_process:
-            page_name = page.get('name', 'unnamed_page')
-            page_url = page.get('browserLink', '')  # Use browserLink directly
-            print(f"\n[INFO] Processing page: {page_name}")
-            print(f"[DEBUG] URL: {page_url}")
-            html_content, text_content = extract_content(driver, page_url)
-            if html_content and text_content:
-                save_content(html_content, text_content, page_name)
-                create_notion_page(page_name, html_content)
-            else:
-                print(f"[WARN] No content extracted for {page_name}")
-            time.sleep(2)
+        page_name = target_page.get('name', 'unnamed_page')
+        page_url = target_page.get('browserLink', '')
+        print(f"\n[INFO] Processing page: {page_name}")
+        print(f"[DEBUG] URL: {page_url}")
+        html_content, text_content = extract_content(driver, page_url)
+        print(f"[DEBUG] html_content is {'present' if html_content else 'missing'}")
+        print(f"[DEBUG] text_content is {'present' if text_content else 'missing'}")
+        if html_content and text_content:
+            print("[DEBUG] Both html_content and text_content present. Proceeding to save and create Notion page.")
+            save_content(html_content, text_content, page_name)
+            create_notion_page(page_name, html_content)
+        else:
+            print(f"[ERROR] No content extracted for {page_name}")
+            sys.exit(1)
     finally:
         driver.quit()
 
