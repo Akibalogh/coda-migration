@@ -280,11 +280,15 @@ def extract_content(driver, url):
     except Exception as e:
         return None, None
 
+def safe_filename(name):
+    # Only allow alphanumeric, space, dash, and underscore
+    return "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+
 def save_content(html_content, text_content, page_name):
     """Save extracted content to files"""
     if not os.path.exists('output'):
         os.makedirs('output')
-    clean_name = "".join(c for c in page_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    clean_name = safe_filename(page_name)
     if html_content:
         html_path = f'output/{clean_name}.html'
         with open(html_path, 'w', encoding='utf-8') as f:
@@ -496,80 +500,94 @@ def main():
         print("[ERROR] No pages found!")
         sys.exit(1)
 
-    target_name = "Algoz"
-    target_page = None
-    for page in pages:
+    start_from = "Client Meeting Notes"
+    start_index = None
+
+    # Debug print: show all page names and indices
+    print("\n[DEBUG] List of all pages:")
+    for idx, page in enumerate(pages):
         page_name = page.get('name', 'unnamed_page')
-        if normalize(page_name) == normalize(target_name):
-            target_page = page
+        marker = "<-- START HERE" if normalize(page_name) == normalize(start_from) else ""
+        print(f"  [{idx}] {page_name} {marker}")
+    print()
+
+    # Find the index of the start page
+    for idx, page in enumerate(pages):
+        page_name = page.get('name', 'unnamed_page')
+        if normalize(page_name) == normalize(start_from):
+            start_index = idx
             break
 
-    if not target_page:
-        print(f"[ERROR] Could not find page: {target_name}")
+    if start_index is None:
+        print(f"[ERROR] Start page '{start_from}' not found!")
         sys.exit(1)
+
+    # Process all pages after the start page
+    pages_to_process = pages[start_index + 1:]
 
     driver = setup_driver()
     try:
-        page_name = target_page.get('name', 'unnamed_page')
-        page_url = target_page.get('browserLink', '')
-        print(f"[INFO] Processing page: {page_name}")
-        print(f"[INFO] URL: {page_url}")
-        try:
-            driver.get(page_url)
-            WebDriverWait(driver, 20).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-coda-ui-id="canvas"], [data-coda-ui-id="canvas-content"], [data-coda-ui-id="page-content"]'))
-            )
-            time.sleep(2)
-            js = '''
-            let contentElements = document.querySelectorAll('[data-coda-ui-id="canvas"], [data-coda-ui-id="canvas-content"], [data-coda-ui-id="page-content"]');
-            for (let element of contentElements) {
-                if (element.offsetWidth > 0 && element.offsetHeight > 0) {
-                    return element.innerHTML;
+        output_dir = 'output'
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        for page in pages_to_process:
+            page_name = page.get('name', 'unnamed_page')
+            safe_name = safe_filename(page_name)
+            print(f"[INFO] Processing page: {page_name}")
+            page_url = page.get('browserLink', '')
+            try:
+                driver.get(page_url)
+                WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '[data-coda-ui-id="canvas"], [data-coda-ui-id="canvas-content"], [data-coda-ui-id="page-content"]'))
+                )
+                time.sleep(2)
+                js = '''
+                let contentElements = document.querySelectorAll('[data-coda-ui-id="canvas"], [data-coda-ui-id="canvas-content"], [data-coda-ui-id="page-content"]');
+                for (let element of contentElements) {
+                    if (element.offsetWidth > 0 && element.offsetHeight > 0) {
+                        return element.innerHTML;
+                    }
                 }
-            }
-            return null;
-            '''
-            raw_html = driver.execute_script(js)
-            if not raw_html:
-                print(f"[ERROR] No raw HTML extracted for {page_name} at {page_url}")
-                return
-            # Save raw HTML for inspection
-            if not os.path.exists('output'):
-                os.makedirs('output')
-            with open('output/Algoz_raw.html', 'w', encoding='utf-8') as f:
-                f.write(raw_html)
-            print(f"[INFO] Saved raw HTML to output/Algoz_raw.html")
-            # --- Improved bullet/numbered list detection ---
-            soup = BeautifulSoup(raw_html, 'html.parser')
-            clean_html = convert_coda_bullets_to_lists(str(soup))
-            clean_html = postprocess_coda_lists(clean_html)
-            clean_text = soup.get_text(separator='\n', strip=True)
-            if clean_html and clean_text:
-                save_content(clean_html, clean_text, page_name)
-                notion_title, call_date = extract_title_and_date(page_name)
-                if call_date:
-                    soup2 = BeautifulSoup(clean_html, 'html.parser')
-                    first_block = soup2.find(['p', 'div'])
-                    if first_block:
-                        strong_tag = soup2.new_tag('strong')
-                        strong_tag.string = f'Call {call_date} '
-                        if first_block.contents:
-                            first_block.insert(0, strong_tag)
-                            if (len(first_block.contents) > 1 and
-                                isinstance(first_block.contents[1], str) and
-                                not first_block.contents[1].startswith(' ')):
-                                first_block.insert(1, ' ')
+                return null;
+                '''
+                raw_html = driver.execute_script(js)
+                if not raw_html:
+                    print(f"[ERROR] No raw HTML extracted for {page_name} at {page_url}")
+                    continue
+                # Save raw HTML for inspection
+                with open(f'{output_dir}/{safe_name}_raw.html', 'w', encoding='utf-8') as f:
+                    f.write(raw_html)
+                # --- Improved bullet/numbered list detection ---
+                soup = BeautifulSoup(raw_html, 'html.parser')
+                clean_html = convert_coda_bullets_to_lists(str(soup))
+                clean_html = postprocess_coda_lists(clean_html)
+                clean_text = soup.get_text(separator='\n', strip=True)
+                if clean_html and clean_text:
+                    save_content(clean_html, clean_text, safe_name)
+                    notion_title, call_date = extract_title_and_date(page_name)
+                    if call_date:
+                        soup2 = BeautifulSoup(clean_html, 'html.parser')
+                        first_block = soup2.find(['p', 'div'])
+                        if first_block:
+                            strong_tag = soup2.new_tag('strong')
+                            strong_tag.string = f'Call {call_date} '
+                            if first_block.contents:
+                                first_block.insert(0, strong_tag)
+                                if (len(first_block.contents) > 1 and
+                                    isinstance(first_block.contents[1], str) and
+                                    not first_block.contents[1].startswith(' ')):
+                                    first_block.insert(1, ' ')
+                            else:
+                                first_block.append(strong_tag)
+                            clean_html = str(soup2)
                         else:
-                            first_block.append(strong_tag)
-                        clean_html = str(soup2)
-                    else:
-                        clean_html = f'<p><strong>Call {call_date}</strong></p>' + clean_html.lstrip('\n').lstrip('\r').lstrip()
-                create_notion_page(notion_title, clean_html)
-                print(f"[✓] Notion page created: {notion_title}")
-            else:
-                print(f"[ERROR] No content extracted for {page_name}")
-        except Exception as e:
-            print(f"[ERROR] Exception during extraction for {page_name} at {page_url}: {e}")
+                            clean_html = f'<p><strong>Call {call_date}</strong></p>' + clean_html.lstrip('\n').lstrip('\r').lstrip()
+                    create_notion_page(notion_title, clean_html)
+                    print(f"[✓] Notion page created: {notion_title}")
+                else:
+                    print(f"[ERROR] No content extracted for {page_name}")
+            except Exception as e:
+                print(f"[ERROR] Exception during extraction for {page_name} at {page_url}: {e}")
     finally:
         driver.quit()
 
