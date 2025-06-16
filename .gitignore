@@ -1,3 +1,4 @@
+.test-venv/
 output/
 .env
 extracted_content/

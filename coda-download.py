@@ -15,7 +15,8 @@ from selenium.common.exceptions import TimeoutException, WebDriverException
 # Configuration
 CODA_API_TOKEN = '3c10b406-488c-49ac-a483-4b912be6fc23'
 CODA_DOC_ID = '0eJEEjA-GU'
-MAX_TEST_PAGES = 2  # Limit to 2 test pages for now
+# MAX_TEST_PAGES = 2  # Remove page limit to process all pages
+MAX_TEST_PAGES = None
 
 # Headers
 coda_headers = {'Authorization': f'Bearer {CODA_API_TOKEN}'}
@@ -64,7 +65,7 @@ def fetch_all_pages_flat():
             print(f"[INFO] Fetched {len(items)} pages...")
 
             next_token = data.get('nextPageToken')
-            if not next_token or len(all_pages) >= MAX_TEST_PAGES:
+            if not next_token or (MAX_TEST_PAGES is not None and len(all_pages) >= MAX_TEST_PAGES):
                 break
 
         except Exception as e:
@@ -388,8 +389,8 @@ def main():
         print("[ERROR] Could not find 'Client Meeting Notes' in page list!")
         return
     
-    # Process the next 2 pages after 'Client Meeting Notes'
-    pages_to_process = pages[start_idx:start_idx+2]
+    # Process all pages after 'Client Meeting Notes'
+    pages_to_process = pages[start_idx:]
     if not pages_to_process:
         print("[ERROR] No pages found after 'Client Meeting Notes'!")
         return
