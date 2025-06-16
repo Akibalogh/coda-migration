@@ -195,6 +195,61 @@ def postprocess_coda_lists(html_content):
             pass
     return str(soup)
 
+def convert_coda_bullets_to_lists(html):
+    from bs4 import BeautifulSoup, Tag
+    soup = BeautifulSoup(html, "html.parser")
+    lines = soup.find_all("div", class_=lambda c: c and "kr-line" in c)
+    new_blocks = []
+    i = 0
+    while i < len(lines):
+        div = lines[i]
+        classes = div.get("class", [])
+        # Unordered list
+        if "kr-ulist" in classes and "kr-listitem" in classes:
+            ul = soup.new_tag("ul")
+            while i < len(lines):
+                div2 = lines[i]
+                classes2 = div2.get("class", [])
+                if "kr-ulist" in classes2 and "kr-listitem" in classes2:
+                    li = soup.new_tag("li")
+                    text = div2.get_text(strip=True)
+                    li.string = text
+                    ul.append(li)
+                    i += 1
+                else:
+                    break
+            new_blocks.append(ul)
+            continue
+        # Ordered list
+        elif "kr-olist" in classes and "kr-listitem" in classes:
+            ol = soup.new_tag("ol")
+            while i < len(lines):
+                div2 = lines[i]
+                classes2 = div2.get("class", [])
+                if "kr-olist" in classes2 and "kr-listitem" in classes2:
+                    li = soup.new_tag("li")
+                    text = div2.get_text(strip=True)
+                    li.string = text
+                    ol.append(li)
+                    i += 1
+                else:
+                    break
+            new_blocks.append(ol)
+            continue
+        else:
+            # Normal paragraph
+            p = soup.new_tag("p")
+            p.string = div.get_text(strip=True)
+            new_blocks.append(p)
+            i += 1
+    # Remove all original kr-line divs
+    for div in lines:
+        div.decompose()
+    # Append new blocks to soup
+    for block in new_blocks:
+        soup.append(block)
+    return str(soup)
+
 def extract_content(driver, url):
     """Extract formatted content from a Coda page using robust selectors and JS."""
     try:
@@ -412,52 +467,80 @@ def main():
         print("[ERROR] No pages found!")
         sys.exit(1)
 
-    start_from = "Client Meeting Notes"
-    found_start = False
-    skip_first = True
+    target_name = "Algoz"
+    target_page = None
+    for page in pages:
+        page_name = page.get('name', 'unnamed_page')
+        if normalize(page_name) == normalize(target_name):
+            target_page = page
+            break
+
+    if not target_page:
+        print(f"[ERROR] Could not find page: {target_name}")
+        sys.exit(1)
 
     driver = setup_driver()
     try:
-        for page in pages:
-            page_name = page.get('name', 'unnamed_page')
-            if not found_start:
-                if normalize(page_name) == normalize(start_from):
-                    found_start = True
-                    skip_first = True
-                else:
-                    continue
-            if skip_first:
-                skip_first = False
-                continue
-            print(f"[INFO] Processing page: {page_name}")
-            page_url = page.get('browserLink', '')
-            html_content, text_content = extract_content(driver, page_url)
-            if html_content and text_content:
-                save_content(html_content, text_content, page_name)
+        page_name = target_page.get('name', 'unnamed_page')
+        page_url = target_page.get('browserLink', '')
+        print(f"[INFO] Processing page: {page_name}")
+        print(f"[INFO] URL: {page_url}")
+        try:
+            driver.get(page_url)
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-coda-ui-id="canvas"], [data-coda-ui-id="canvas-content"], [data-coda-ui-id="page-content"]'))
+            )
+            time.sleep(2)
+            js = '''
+            let contentElements = document.querySelectorAll('[data-coda-ui-id="canvas"], [data-coda-ui-id="canvas-content"], [data-coda-ui-id="page-content"]');
+            for (let element of contentElements) {
+                if (element.offsetWidth > 0 && element.offsetHeight > 0) {
+                    return element.innerHTML;
+                }
+            }
+            return null;
+            '''
+            raw_html = driver.execute_script(js)
+            if not raw_html:
+                print(f"[ERROR] No raw HTML extracted for {page_name} at {page_url}")
+                return
+            # Save raw HTML for inspection
+            if not os.path.exists('output'):
+                os.makedirs('output')
+            with open('output/Algoz_raw.html', 'w', encoding='utf-8') as f:
+                f.write(raw_html)
+            print(f"[INFO] Saved raw HTML to output/Algoz_raw.html")
+            # --- Improved bullet/numbered list detection ---
+            soup = BeautifulSoup(raw_html, 'html.parser')
+            clean_html = convert_coda_bullets_to_lists(str(soup))
+            clean_html = postprocess_coda_lists(clean_html)
+            clean_text = soup.get_text(separator='\n', strip=True)
+            if clean_html and clean_text:
+                save_content(clean_html, clean_text, page_name)
                 notion_title, call_date = extract_title_and_date(page_name)
                 if call_date:
-                    soup = BeautifulSoup(html_content, 'html.parser')
-                    first_block = soup.find(['p', 'div'])
+                    soup2 = BeautifulSoup(clean_html, 'html.parser')
+                    first_block = soup2.find(['p', 'div'])
                     if first_block:
-                        strong_tag = soup.new_tag('strong')
+                        strong_tag = soup2.new_tag('strong')
                         strong_tag.string = f'Call {call_date} '
-                        # Insert at the beginning, with a space if needed
                         if first_block.contents:
                             first_block.insert(0, strong_tag)
-                            # Optionally add a space after the strong tag if not already present
                             if (len(first_block.contents) > 1 and
                                 isinstance(first_block.contents[1], str) and
                                 not first_block.contents[1].startswith(' ')):
                                 first_block.insert(1, ' ')
                         else:
                             first_block.append(strong_tag)
-                        html_content = str(soup)
+                        clean_html = str(soup2)
                     else:
-                        html_content = f'<p><strong>Call {call_date}</strong></p>' + html_content.lstrip('\n').lstrip('\r').lstrip()
-                create_notion_page(notion_title, html_content)
+                        clean_html = f'<p><strong>Call {call_date}</strong></p>' + clean_html.lstrip('\n').lstrip('\r').lstrip()
+                create_notion_page(notion_title, clean_html)
                 print(f"[✓] Notion page created: {notion_title}")
             else:
                 print(f"[ERROR] No content extracted for {page_name}")
+        except Exception as e:
+            print(f"[ERROR] Exception during extraction for {page_name} at {page_url}: {e}")
     finally:
         driver.quit()
 
