@@ -97,8 +97,8 @@ def setup_driver():
     return webdriver.Chrome(options=options)
 
 def postprocess_coda_lists(html_content):
-    """Convert lines starting with '*' or '-' in kr-line divs into nested <ul><li> HTML lists. Also preserve the first non-list, bolded line as a bold paragraph, and skip header/title lines."""
-    from bs4 import BeautifulSoup, Tag
+    """Convert kr-line divs into properly nested <ul>/<ol> HTML lists using block-level-X for nesting, and robustly preserve anchor tags and all inline content. Do not change heading handling."""
+    from bs4 import BeautifulSoup, Tag, NavigableString
     soup = BeautifulSoup(html_content, 'html.parser')
 
     # Remove Coda header and page title if present
@@ -106,93 +106,91 @@ def postprocess_coda_lists(html_content):
     if header:
         header.decompose()
 
-    # Find all kr-line divs in order
     lines = soup.find_all('div', class_=lambda c: c and 'kr-line' in c)
     new_blocks = []
-    i = 0
-    first_bolded_done = False
-    while i < len(lines):
-        div = lines[i]
-        text = div.get_text(strip=True)
-        if text is None:
-            text = ''
-        # If this is the first non-list, bolded line, preserve as bold paragraph
-        if not first_bolded_done and not text.startswith('*') and not text.startswith('-'):
-            bold_span = div.find('span', class_=lambda c: c and 'kr-bold' in c)
-            if bold_span:
-                p = soup.new_tag('p')
-                strong = soup.new_tag('strong')
-                strong.string = text
-                p.append(strong)
-                new_blocks.append(p)
-                first_bolded_done = True
-                i += 1
-                continue
-        # Detect bullet lines
-        if text.startswith('*') or text.startswith('-'):
-            list_stack = []
-            while i < len(lines):
-                div2 = lines[i]
-                text2 = div2.get_text(strip=True)
-                if text2 is None:
-                    text2 = ''
-                if text2.startswith('*'):
+    stack = []  # Stack of (list_tag, level, list_obj, li_obj)
+
+    def extract_content_with_links(tag):
+        result = []
+        for child in tag.children:
+            if isinstance(child, NavigableString):
+                if child.strip():
+                    result.append(child)
+            elif isinstance(child, Tag):
+                # If it's a kr-object-e, look for <a>
+                if 'kr-object-e' in child.get('class', []):
+                    a = child.find('a', href=True)
+                    if a:
+                        result.append(a)
+                        continue
+                # If it's an <a>, preserve it
+                if child.name == 'a' and child.has_attr('href'):
+                    result.append(child)
+                    continue
+                # Otherwise, recurse
+                result.extend(extract_content_with_links(child))
+        return result
+
+    for div in lines:
+        classes = div.get('class', [])
+        # Determine nesting level
+        level = 0
+        for c in classes:
+            if c.startswith('block-level-'):
+                try:
+                    level = int(c.split('-')[-1])
+                except Exception:
                     level = 0
-                    content = text2.lstrip('*').strip()
-                elif text2.startswith('-'):
-                    level = 1
-                    content = text2.lstrip('-').strip()
-                else:
-                    break
-                if content is None:
-                    content = ''
-                while list_stack and list_stack[-1][1] >= level:
-                    list_stack.pop()
-                if not list_stack or list_stack[-1][1] < level:
-                    ul = soup.new_tag('ul')
-                    if list_stack:
-                        parent_ul, _ = list_stack[-1]
-                        if parent_ul.contents and hasattr(parent_ul.contents[-1], 'name') and parent_ul.contents[-1].name == 'li':
-                            parent_ul.contents[-1].append(ul)
-                        else:
-                            li = soup.new_tag('li')
-                            li.string = ''
-                            parent_ul.append(li)
-                            li.append(ul)
+        is_bullet = 'kr-ulist' in classes and 'kr-listitem' in classes
+        is_numbered = 'kr-olist' in classes and 'kr-listitem' in classes
+        list_tag = 'ul' if is_bullet else ('ol' if is_numbered else None)
+
+        if is_bullet or is_numbered:
+            # Pop stack to the parent level
+            while stack and (stack[-1][1] >= level):
+                stack.pop()
+            # If we need a new list at this level
+            if not stack or stack[-1][0] != list_tag or stack[-1][1] != level:
+                new_list = soup.new_tag(list_tag)
+                if stack:
+                    # Attach to parent li
+                    parent_li = stack[-1][3]
+                    if parent_li is not None:
+                        parent_li.append(new_list)
                     else:
-                        new_blocks.append(ul)
-                    list_stack.append((ul, level))
-                li = soup.new_tag('li')
-                li.string = content if content is not None else ''
-                list_stack[-1][0].append(li)
-                i += 1
-            continue
+                        new_blocks.append(new_list)
+                else:
+                    new_blocks.append(new_list)
+                stack.append((list_tag, level, new_list, None))
+            # Create list item
+            li = soup.new_tag('li')
+            for content in extract_content_with_links(div):
+                li.append(content)
+            # Attach li to current list
+            stack[-1][2].append(li)
+            # Update stack to point to this li for possible nested lists
+            stack[-1] = (stack[-1][0], stack[-1][1], stack[-1][2], li)
         else:
-            # For other non-list lines, add as normal paragraph
+            # Not a list item: close all open lists
+            stack = []
             p = soup.new_tag('p')
-            p.string = text
+            for content in extract_content_with_links(div):
+                p.append(content)
             new_blocks.append(p)
-            i += 1
+
+    # Remove all original kr-line divs
     for div in lines:
         try:
             div.decompose()
         except Exception:
             pass
-    main_container = soup
-    # Filter out any tags with name=None or non-Tag objects
-    from bs4 import Tag
-    filtered_blocks = []
+    # Remove empty <ul>, <ol>, <li>
+    for tag in soup.find_all(['ul', 'ol', 'li']):
+        if not tag.contents or all(isinstance(c, NavigableString) and not c.strip() for c in tag.contents):
+            tag.decompose()
+    # Append new blocks to soup
     for block in new_blocks:
-        if not isinstance(block, Tag):
-            continue
-        if block.name is None:
-            continue
-        filtered_blocks.append(block)
-    for block in filtered_blocks:
-        try:
-            main_container.append(block)
-        except Exception:
-            pass
+        soup.append(block)
     return str(soup)
 
 def convert_coda_bullets_to_lists(html):
@@ -303,12 +301,27 @@ def save_content(html_content, text_content, page_name):
 def html_to_notion_blocks(html):
     from bs4 import BeautifulSoup, NavigableString, Tag
     soup = BeautifulSoup(html, 'html.parser')
+
+    # Remove empty <ul> and <li> elements
+    for ul in soup.find_all('ul'):
+        if not ul.find('li'):
+            ul.decompose()
+    for li in soup.find_all('li'):
+        if not li.get_text(strip=True) and not li.find(['ul', 'ol']):
+            li.decompose()
+
     blocks = []
 
-    # If the soup has a single top-level tag (like <div>), process its children
-    elements = soup.contents
-    if len(elements) == 1 and isinstance(elements[0], Tag):
-        elements = elements[0].contents
+    # Always process all top-level elements, including <ul> and <ol>
+    elements = [el for el in soup.contents if not (isinstance(el, NavigableString) and not el.strip())]
+
+    # DEBUG: Print first 5 top-level elements for any HTML processed
+    print("\n[DEBUG] Top-level elements in html_to_notion_blocks:")
+    for i, el in enumerate(elements[:5]):
+        if isinstance(el, Tag):
+            print(f"  [{i}] <{el.name}>: {str(el)[:80]}...")
+        elif isinstance(el, NavigableString):
+            print(f"  [{i}] NavigableString: {repr(str(el)[:80])}")
 
     def parse_rich_text(el, parent_annotations=None):
         if parent_annotations is None:
@@ -336,15 +349,37 @@ def html_to_notion_blocks(html):
                     annotations["strikethrough"] = True
                 if tag == "code":
                     annotations["code"] = True
-                rich_text.extend(parse_rich_text(child, annotations))
+                if tag == "a" and child.has_attr('href'):
+                    text = child.get_text()
+                    if text:
+                        rich_text.append({
+                            "type": "text",
+                            "text": {"content": text, "link": {"url": child['href']}},
+                            "annotations": annotations
+                        })
+                else:
+                    # Recursively parse all children (including nested <a> tags)
+                    rich_text.extend(parse_rich_text(child, annotations))
         return rich_text
 
     def parse_list(ul):
         items = []
         for li in ul.find_all('li', recursive=False):
-            rich_text = parse_rich_text(li)
+            if not li.get_text(strip=True) and not li.find(['ul', 'ol']):
+                continue
+            main_content = []
+            nested_lists = []
+            for child in li.contents:
+                if isinstance(child, Tag) and child.name in ['ul', 'ol']:
+                    nested_lists.append(child)
+                else:
+                    main_content.append(child)
+            li_for_rich = Tag(name='span')
+            for c in main_content:
+                li_for_rich.append(c)
+            rich_text = parse_rich_text(li_for_rich)
             if not rich_text:
-                text = li.get_text(strip=True)
+                text = li_for_rich.get_text(strip=True)
                 if text:
                     rich_text = [{
                         "type": "text",
@@ -358,20 +393,35 @@ def html_to_notion_blocks(html):
                     "rich_text": rich_text
                 }
             }
-            nested_uls = li.find_all('ul', recursive=False)
-            if nested_uls:
-                block["bulleted_list_item"]["children"] = []
-                for nested_ul in nested_uls:
-                    block["bulleted_list_item"]["children"].extend(parse_list(nested_ul))
+            children = []
+            for nested in nested_lists:
+                if nested.name == 'ul':
+                    children.extend(parse_list(nested))
+                elif nested.name == 'ol':
+                    children.extend(parse_ordered_list(nested))
+            if children:
+                block["bulleted_list_item"]["children"] = children
             items.append(block)
         return items
 
     def parse_ordered_list(ol):
         items = []
         for li in ol.find_all('li', recursive=False):
-            rich_text = parse_rich_text(li)
+            if not li.get_text(strip=True) and not li.find(['ul', 'ol']):
+                continue
+            main_content = []
+            nested_lists = []
+            for child in li.contents:
+                if isinstance(child, Tag) and child.name in ['ul', 'ol']:
+                    nested_lists.append(child)
+                else:
+                    main_content.append(child)
+            li_for_rich = Tag(name='span')
+            for c in main_content:
+                li_for_rich.append(c)
+            rich_text = parse_rich_text(li_for_rich)
             if not rich_text:
-                text = li.get_text(strip=True)
+                text = li_for_rich.get_text(strip=True)
                 if text:
                     rich_text = [{
                         "type": "text",
@@ -385,11 +435,14 @@ def html_to_notion_blocks(html):
                     "rich_text": rich_text
                 }
             }
-            nested_ols = li.find_all('ol', recursive=False)
-            if nested_ols:
-                block["numbered_list_item"]["children"] = []
-                for nested_ol in nested_ols:
-                    block["numbered_list_item"]["children"].extend(parse_ordered_list(nested_ol))
+            children = []
+            for nested in nested_lists:
+                if nested.name == 'ul':
+                    children.extend(parse_list(nested))
+                elif nested.name == 'ol':
+                    children.extend(parse_ordered_list(nested))
+            if children:
+                block["numbered_list_item"]["children"] = children
             items.append(block)
         return items
 
@@ -447,7 +500,6 @@ def html_to_notion_blocks(html):
                 "paragraph": {"rich_text": []}
             })
 
-    # Remove leading empty/whitespace-only paragraph blocks
     while blocks and blocks[0]["type"] == "paragraph" and (not blocks[0]["paragraph"]["rich_text"] or all(rt["type"] == "text" and not rt["text"]["content"].strip() for rt in blocks[0]["paragraph"]["rich_text"])):
         blocks.pop(0)
 
@@ -455,6 +507,18 @@ def html_to_notion_blocks(html):
 
 def create_notion_page(title, html):
     blocks = html_to_notion_blocks(html)
+    # Debug: Print the Notion API payload for Lagoon only
+    if title.strip().lower() == 'lagoon':
+        import json
+        payload = {
+            "parent": {"page_id": NOTION_PARENT_PAGE_ID},
+            "properties": {
+                "title": {"title": [{"type": "text", "text": {"content": title}}]}
+            },
+            "children": blocks[:100]
+        }
+        print("\n[DEBUG] Notion API payload for Lagoon:")
+        print(json.dumps(payload, indent=2))
     first_chunk = blocks[:100]
     remaining = blocks[100:]
     payload = {
@@ -532,6 +596,8 @@ def main():
             os.makedirs(output_dir)
         for page in pages_to_process:
             page_name = page.get('name', 'unnamed_page')
+            if normalize(page_name) != normalize('Lagoon'):
+                continue  # Only process Lagoon
             safe_name = safe_filename(page_name)
             print(f"[INFO] Processing page: {page_name}")
             page_url = page.get('browserLink', '')
@@ -593,3 +659,30 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # --- TEST HARNESS FOR postprocess_coda_lists ---
+    test_raw_path = 'output/Lagoon_raw.html'
+    test_out_path = 'output/Lagoon_test_processed.html'
+    import os
+    if os.path.exists(test_raw_path):
+        with open(test_raw_path, 'r', encoding='utf-8') as f:
+            raw_html = f.read()
+        processed_html = postprocess_coda_lists(raw_html)
+        with open(test_out_path, 'w', encoding='utf-8') as f:
+            f.write(processed_html)
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(processed_html, 'html.parser')
+        kr_lines = soup.find_all('div', class_=lambda c: c and 'kr-line' in c)
+        num_kr_lines = len(kr_lines)
+        num_ul = len(soup.find_all('ul'))
+        num_ol = len(soup.find_all('ol'))
+        num_a = len(soup.find_all('a'))
+        print(f"[INFO] TEST HARNESS: kr-line divs in processed: {num_kr_lines}, <ul>: {num_ul}, <ol>: {num_ol}, <a>: {num_a}")
+        print(f"[INFO] TEST HARNESS: Output written to {test_out_path}")
+    # TEST HARNESS: Minimal nested list and link
+    test_html = '''<ul><li>Parent item <a href="https://example.com">Example</a><ul><li>Child item <a href="https://child.com">ChildLink</a></li></ul></li></ul>'''
+    print("\n[TEST HARNESS] Minimal nested list and link HTML:")
+    print(test_html)
+    blocks = html_to_notion_blocks(test_html)
+    import json
+    print("\n[TEST HARNESS] Notion blocks for minimal nested list and link:")
+    print(json.dumps(blocks, indent=2))

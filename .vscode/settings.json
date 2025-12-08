@@ -1,4 +1,21 @@
 {
-  "python.analysis.extraPaths": ["./venv/lib/python3.11/site-packages"]
+  "python.analysis.extraPaths": [
+    "./venv/lib/python3.11/site-packages"
+  ],
+  "cursorpyright.analysis.extraPaths": [
+    "./venv/lib/python3.11/site-packages"
+  ]
 }
 
+{
+  "python.analysis.extraPaths": [
+    "./venv/lib/python3.11/site-packages"
+  ],
+  "cursorpyright.analysis.extraPaths": [
+    "./venv/lib/python3.11/site-packages"
+  ],
+  "terminal.external.osxExec": "iTerm.app",
+  "terminal.explorerKind": "external",
+  "terminal.integrated.defaultProfile.osx": "zsh",
+  "terminal.integrated.inheritEnv": true
+}
