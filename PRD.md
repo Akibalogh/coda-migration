@@ -58,9 +58,12 @@ Automated system that:
 ### 3.2 Content Extraction
 - **Selenium Automation**: Use headless Chrome to extract rendered HTML
 - **Content Selectors**: Robust selectors for canvas/content elements
+- **Formatting Detection**: JavaScript-based detection of text formatting using browser computed styles (font-weight, font-style, text-decoration)
 - **HTML Processing**: Clean and process HTML to extract structured content
 - **List Conversion**: Convert Coda list structures to proper HTML `<ul>`/`<ol>` elements
 - **Link Preservation**: Preserve all anchor tags and href attributes
+- **Rich Text Wrapping**: Automatically wrap formatted text with semantic HTML tags (`<strong>`, `<em>`, `<u>`, `<s>`) based on computed styles
+- **Note**: PDF extraction is not used. The system uses Selenium to extract rendered HTML directly from Coda pages, which preserves formatting, links, and structure better than PDF conversion.
 
 ### 3.3 Notion Integration
 - **API Authentication**: Authenticate with Notion using integration token
@@ -118,6 +121,8 @@ Coda Document → API Fetch → Selenium Extraction → HTML Processing → Noti
 - Handles mixed nested lists (bulleted within numbered, etc.)
 
 ### 4.4 Content Processing Pipeline
+
+**Note**: PDF extraction is not used. The system extracts content directly from rendered Coda pages using Selenium, which provides superior format preservation compared to PDF conversion.
 
 **Step 1: Coda API Fetch**
 - Fetch all pages from Coda document
@@ -239,6 +244,12 @@ NOTION_API_TOKEN=your_notion_token
 NOTION_PARENT_PAGE_ID=your_parent_page_id
 ```
 
+**Testing Configuration:**
+- Test Notion page: https://www.notion.so/Coda-migrations-test-2c3636dd0ba5807eb374c07a0134e636
+- Test parent page ID: `2c3636dd-0ba5-807e-b374-c07a0134e636` (with hyphens for API)
+- This test page is used for development and testing of the migration system
+- **Note**: The page must be shared with your Notion integration for API access
+
 ---
 
 ## 7. Implementation Plan
@@ -337,17 +348,40 @@ See `README.md` for common issues and solutions.
 
 ### 12.1 Major Achievements
 - ✅ **Coda API Integration**: Successfully fetches pages from Coda documents
-- ✅ **Content Extraction**: Robust HTML extraction using Selenium
+- ✅ **Content Extraction**: Robust HTML extraction using Selenium with computed style detection
 - ✅ **Notion Integration**: Complete Notion API integration with block conversion
 - ✅ **Format Preservation**: Preserves links, formatting, and nested lists
+- ✅ **Rich Text Formatting**: Detects and preserves bold, italic, underline, and strikethrough text via computed CSS styles
 - ✅ **List Processing**: Handles nested bulleted and numbered lists correctly
+- ✅ **Formatting Detection**: JavaScript-based detection of text formatting using browser computed styles
 
 ### 12.2 Key Files
 - `coda-download.py` - Main migration script
 - `.env` - Configuration file for API tokens
 
-### 12.3 Next Steps
-- Complete comprehensive testing
-- Add support for additional Notion block types
+### 12.3 Testing
+- **Test Notion Page**: https://www.notion.so/Coda-migrations-test-2c3636dd0ba5807eb374c07a0134e636
+- All migrated pages are created as children of this test page during development
+- Use `--dry-run` flag to preview migrations without creating pages
+
+### 12.4 Duplicate Prevention
+- **Automatic Duplicate Detection**: The system checks for existing pages with the same title before creating new ones
+- **Skip Logic**: If a page with the same title already exists, the migration skips it to avoid duplicates
+- **Content Verification**: Duplicate detection compares both title and initial content to ensure pages are truly duplicates
+- **Cleanup Tools**: Scripts available to identify and remove duplicate pages if they occur
+
+### 12.5 Formatting Support (Implemented January 2025)
+- ✅ **Bold Text**: Detected via computed `font-weight` (>= 600 or 'bold') and wrapped with `<strong>` tags
+- ✅ **Italic Text**: Detected via computed `font-style === 'italic'` and wrapped with `<em>` tags
+- ✅ **Underline**: Detected via computed `text-decoration` and wrapped with `<u>` tags
+- ✅ **Strikethrough**: Detected via computed `text-decoration` and wrapped with `<s>` tags
+- ✅ **Bulleted Lists**: Converted from Coda `kr-ulist` classes to HTML `<ul>` and Notion `bulleted_list_item`
+- ✅ **Numbered Lists**: Converted from Coda `kr-olist` classes to HTML `<ol>` and Notion `numbered_list_item`
+- ✅ **Nested Lists**: Supports multi-level nested lists with proper hierarchy
+- ✅ **Links**: Preserved with href attributes and converted to Notion link annotations
+
+### 12.6 Next Steps
+- Complete comprehensive testing across all page types
+- Add support for additional Notion block types (tables, callouts, code blocks)
 - Improve error handling and recovery
-- Add documentation and usage examples
+- Performance optimization for large migrations

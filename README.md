@@ -4,12 +4,14 @@ This tool automates the migration of pages from Coda documents to Notion, preser
 
 ## Features
 - **Direct API Integration**: Fetches pages directly from Coda API
+- **Rich Text Formatting**: Preserves bold, italic, underline, and strikethrough text formatting
 - **Format Preservation**: Preserves headings, lists (bulleted and numbered), links, and text formatting
 - **Nested List Support**: Handles nested lists with proper hierarchy
 - **Link Preservation**: Maintains all links from original Coda pages
 - **Date Extraction**: Automatically extracts and formats dates from page titles
 - **Batch Processing**: Processes multiple pages in sequence
 - **Selective Processing**: Supports filtering pages to process specific accounts or sections
+- **Formatting Detection**: Uses browser computed styles to detect text formatting (works even when Coda doesn't use semantic HTML tags)
 
 ## Requirements
 - Python 3.9+
@@ -60,6 +62,7 @@ The script will:
 - Uses Selenium to load each page in headless Chrome
 - Extracts rendered HTML content from the page
 - Processes HTML to convert Coda list structures to proper HTML lists
+- **Note**: PDF extraction is not used. Content is extracted directly from rendered pages for better format preservation.
 
 ### 3. Notion Block Conversion
 - Converts HTML elements to Notion block format
@@ -75,9 +78,16 @@ The script will:
 
 - **Headings**: H1, H2, H3
 - **Lists**: Bulleted and numbered lists with nesting
-- **Text Formatting**: Bold, italic, underline, strikethrough, code
+- **Text Formatting**: 
+  - **Bold**: Detected via computed font-weight (>= 600 or 'bold')
+  - **Italic**: Detected via computed font-style
+  - **Underline**: Detected via computed text-decoration
+  - **Strikethrough**: Detected via computed text-decoration
+  - **Code**: Supported via `<code>` tags
 - **Links**: All anchor tags with href attributes
 - **Paragraphs**: Regular text blocks
+
+**Note**: Formatting is detected using browser computed styles, which means it works even when Coda uses CSS classes instead of semantic HTML tags for formatting.
 
 ## Troubleshooting
 

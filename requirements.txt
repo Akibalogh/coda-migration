@@ -1,6 +1,7 @@
 beautifulsoup4==4.12.3
 soupsieve==2.6
 selenium==4.33.0
+webdriver-manager==4.0.2
 requests==2.32.3
 urllib3==2.4.0
 python-dotenv==1.0.1
